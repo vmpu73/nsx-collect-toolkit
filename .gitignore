@@ -1,0 +1,23 @@
+# collected output must never be committed
+*.pcap
+*.pcap[0-9]
+*.pcap[0-9][0-9]
+urd-out/
+stats-*/
+sessions-*/
+dfw-*/
+.urd-end-*
+
+# site specific configs - copy the .conf and fill it in locally
+*.conf.local
+*.local
+
+# archives
+*.tgz
+*.tar.gz
+
+# editor / OS
+.DS_Store
+._*
+*~
+*.swp
