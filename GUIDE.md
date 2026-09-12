@@ -1,4 +1,4 @@
-# 수집기 사용 가이드 — nsx-collector.py (v6)
+# 수집기 사용 가이드 — nsx-collector.py (v6.1)
 
 장비에 올릴 파일은 두 개뿐이다.
 
@@ -52,7 +52,7 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 ### NSX Edge 에서
 ```
 +======================================================================+
-|  NSX Collector 6.0   (python)                                        |
+|  NSX Collector 6.1   (python)                                        |
 |  ISCPSR-49099   edge / mb-edge02   2026-09-12 06:54:44               |
 +======================================================================+
 |    SETUP                          COLLECT                            |
@@ -113,6 +113,11 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 3. **다른 T1 서비스 라우터 목록** → LB 앞단(NAT 전 트래픽이 지나가는 곳)을 고른다
    - → `T1_VPC_SR_UUID`, `LIF_VPCT1_UPLINK`(업링크 인터페이스)
 4. T0 서비스 라우터는 자동으로 `T0_SR_UUID` 에 넣는다
+5. **공인/NAT 주소를 물어본다 → `NAT_IP`**
+   VPC T1 업링크는 **NAT 전** 트래픽이 지나가는 곳이라 VIP 주소가 나타나지
+   않는다. Edge CLI 로는 NAT 규칙을 조회할 수 없어서(실측) 이 값만은 직접
+   묻는다. 넣으면 그 캡처가 실제로 잡히기 시작한다 —
+   랩 실측: 넣기 전 0건 → 넣은 뒤 370건.
 
 쓰는 명령은 전부 조회다: `get logical-routers`,
 `get logical-router <uuid> interfaces`, `get load-balancers`,
@@ -179,6 +184,21 @@ python3 nsx-analyzer.py report 결과.txt
 - 결과 폴더만 있으면 되므로 **내 PC 로 가져와서** 돌려도 된다.
 
 자세한 내용은 **ANALYZER.md**, 손으로 tcpdump 를 쓰는 방법은 **ANALYSIS.md**.
+
+---
+
+## 4-2. 캡처가 0건일 때
+
+캡처가 끝났는데 한 건도 없으면 그 자리에서 이유를 알려 준다.
+
+```
+NOTHING was captured here. The usual reasons, in order:
+  1. this Edge is STANDBY for that T1 - a capture returns 0.
+  2. nothing matching happened during the 20s window.
+  3. the filter does not fit THIS point. At the VPC T1 uplink the addresses
+     are the ones BEFORE NAT, so a VIP never appears there ...
+The filter used was: ...
+```
 
 ---
 

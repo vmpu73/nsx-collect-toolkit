@@ -20,7 +20,7 @@ import re
 import sys
 import time
 
-VERSION = "6.0"
+VERSION = "6.1"
 UIW = 70
 
 # Where runs usually are, in the order they are looked for.
@@ -1101,10 +1101,20 @@ def action_session(want=None):
     tables = [p for p in tables if not failed_command(p)]
     if tables:
         print("   Edge connection tables (%d sample file(s))" % len(tables))
-        last = sorted(tables)[-1]
-        with open(last, encoding="utf-8", errors="replace") as fh:
-            conns = parse_conn_table(fh.read().split("\n"))
-        print("     newest: %s - %d connection(s)" % (os.path.basename(last), len(conns)))
+        # newest sample PER INTERFACE - one newest file overall would only
+        # ever show whichever LIF sorts last
+        newest_per_lif = {}
+        for path in sorted(tables):
+            m = re.match(r"51-edge-fw-conn-table-(\w+)-(\d{6})\.txt$", os.path.basename(path))
+            if m:
+                newest_per_lif[m.group(1)] = path
+        conns = []
+        for lif, path in sorted(newest_per_lif.items()):
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                part = parse_conn_table(fh.read().split("\n"))
+            print("     %s newest: %s - %d connection(s)"
+                  % (lif, os.path.basename(path), len(part)))
+            conns += part
         states, protos, nats = {}, {}, {}
         for c in conns:
             states[c["state"]] = states.get(c["state"], 0) + 1
@@ -1292,25 +1302,36 @@ def action_session(want=None):
             print("     %-20s %s" % (nic[:20],
                                      ", ".join("%s=%d" % (s, v) for s, v in sorted(series))))
         if want and not want.empty():
-            print("     searching the newest flow table for your 5-tuple:")
-            newest = sorted(flows)[-1]
+            print("     searching the flow tables for your 5-tuple:")
+            # the newest sample OF EACH vNIC - taking only the newest file
+            # overall searches one VM and misses the flow on the other
+            newest = {}
+            for path in sorted(flows):
+                m = re.match(r"61-dfw-flows-(.*)-(\d{6})\.txt$", os.path.basename(path))
+                if m:
+                    newest[m.group(1)] = path
             shown = 0
-            for line in open(newest, encoding="utf-8", errors="replace"):
-                if want.src and want.src not in line:
-                    continue
-                if want.dst and want.dst not in line:
-                    continue
-                if want.dport and want.dport not in line:
-                    continue
-                if want.proto and want.proto not in line.lower():
-                    continue
-                if line.strip() and (line[:1].isdigit() or line.startswith("70")):
-                    print("       " + line.strip()[:100])
-                    shown += 1
-                    if shown >= 8:
-                        break
+            for nic, path in sorted(newest.items()):
+                hits = []
+                for line in open(path, encoding="utf-8", errors="replace"):
+                    if want.src and want.src not in line:
+                        continue
+                    if want.dst and want.dst not in line:
+                        continue
+                    if want.dport and want.dport not in line:
+                        continue
+                    if want.proto and want.proto not in line.lower():
+                        continue
+                    if line.strip() and line.strip()[0] in "0123456789abcdef":
+                        hits.append(line.strip())
+                if hits:
+                    print("       %s (%s): %d session(s)" % (nic, os.path.basename(path), len(hits)))
+                    for line in hits[:6]:
+                        print("         " + line[:96])
+                    shown += len(hits)
             if not shown:
-                print("       not in the flow table (the session may have expired)")
+                print("       not in any flow table - the session may have expired,")
+                print("       or that traffic never reached these vNICs")
         print()
     rules = [p for p in files if os.path.basename(p).startswith("62-dfw-rules")]
     if rules:

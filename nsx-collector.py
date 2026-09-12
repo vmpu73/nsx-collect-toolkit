@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "6.0"
+VERSION = "6.1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SELF = os.path.abspath(__file__)
 CONF_PATH = os.environ.get("NSXC_CONF", os.path.join(HERE, "nsx-collector.conf"))
@@ -634,8 +634,10 @@ def ps_line(pid):
     rc, out = sh(["ps", "-c"])
     for line in out.splitlines():
         f = line.split()
-        if len(f) >= 2 and f[1] == str(pid):
-            return line.strip()[:110]
+        if len(f) >= 3 and f[1] == str(pid):
+            # WID CID NAME COMMAND... - the ids are already printed by the
+            # caller, so show the program and what it was told to do
+            return ("%-11s %s" % (f[2], " ".join(f[3:])))[:110]
     return "(gone)"
 
 
@@ -655,16 +657,45 @@ def poller_pids():
 def capture_pids():
     pats = []
     if IS_EDGE:
-        pats.append(r"tcpdump.*-w %s/run-.*/pcap/1" % re.escape(OUT))
-    else:
-        pats.append(r"pktcap-uw.*-o %s/run-.*/pcap/2" % re.escape(OUT))
-        pats.append(r"tcpdump-uw.*-w %s/run-.*/pcap/2" % re.escape(OUT))
-        for flt in esxi_all_filters():
-            pats.append(r"pktcap-uw.*--dvfilter %s " % re.escape(flt))
+        # "timeout -s INT 600 tcpdump -w ..." matches the same pattern as the
+        # tcpdump it wraps, which made two captures read as four processes.
+        # Count the tcpdump itself; the wrapper dies with it.
+        rc, out = sh(["pgrep", "-af", r"tcpdump.*-w %s/run-.*/pcap/1" % re.escape(OUT)])
+        found = []
+        for line in out.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].startswith("tcpdump"):
+                found.append(int(parts[0]))
+        return sorted(set(found))
+    # ESXi: one capture is "sh -c echo Y | timeout ... pktcap-uw ...", so the
+    # same pattern matches three processes. Count the capture programs
+    # themselves - killing them takes the wrappers with them.
+    pats.append(r"-o %s/run-.*/pcap/2" % re.escape(OUT))
+    pats.append(r"-w %s/run-.*/pcap/2" % re.escape(OUT))
+    for flt in esxi_all_filters():
+        pats.append(r"--dvfilter %s " % re.escape(flt))
     out = []
     for pat in pats:
-        out += pids_matching(pat)
+        out += esxi_pids_named(pat, ("pktcap-uw", "tcpdump-uw"))
     return sorted(set(out))
+
+
+def esxi_pids_named(pattern, names):
+    """Cartel ids of processes whose command line matches AND whose program
+    name is one of `names` - "ps -c" column 3 is the world name."""
+    mine = {os.getpid(), os.getppid()}
+    rc, out = sh(["ps", "-c"])
+    found = []
+    for line in out.splitlines():
+        if not re.search(pattern, line):
+            continue
+        f = line.split()
+        if len(f) < 3 or not f[1].isdigit():
+            continue
+        if f[2] not in names or int(f[1]) in mine:
+            continue
+        found.append(int(f[1]))
+    return sorted(set(found))
 
 
 def our_pids():
@@ -853,6 +884,17 @@ def edge_capture(label, prefix, lif, expr, secs, session_id):
     try:
         rc, out = sh(cmd, timeout=secs + 60)
         print("\n".join(out.strip().splitlines()[-4:]))
+        m = re.search(r"(\d+) packets captured", out)
+        if m and int(m.group(1)) == 0:
+            log("  NOTHING was captured here. The usual reasons, in order:")
+            log("    1. this Edge is STANDBY for that T1 - a capture returns 0.")
+            log("       Check it: python3 nsx-collector.py check")
+            log("    2. nothing matching happened during the %ds window." % secs)
+            log("    3. the filter does not fit THIS point. At the VPC T1 uplink")
+            log("       the addresses are the ones BEFORE NAT, so a VIP never")
+            log("       appears there - put the public/NAT address in NAT_IP, or")
+            log("       empty the filter values to catch everything on the LIF.")
+            log("    The filter used was: %s" % (expr or "(none)"))
     finally:
         edge_span_close(session_id)
         mark_done("cap-" + label)
@@ -1443,6 +1485,18 @@ def discover_edge():
     if t0:
         updates["T0_SR_UUID"] = t0[0][0]
         print("   -> T0 service router %s" % t0[0][0])
+    # The VPC T1 uplink carries the traffic BEFORE NAT, so the VIP never shows
+    # up there. The Edge CLI cannot list NAT rules (checked on NSX 4.2.4), so
+    # the one address that makes that capture useful has to be asked for.
+    if updates.get("LIF_VPCT1_UPLINK"):
+        print()
+        print("   The VPC T1 uplink sees the traffic BEFORE NAT, so the VIP")
+        print("   (%s) does not appear there." % (updates.get("VIP") or "the VIP"))
+        print("   If the service has a public / pre-NAT address, give it now and")
+        print("   that capture will actually catch something. Enter = skip.")
+        nat = ask("   public / NAT address (Enter = skip) : ")
+        if nat:
+            updates["NAT_IP"] = nat
     return updates
 
 

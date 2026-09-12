@@ -1,4 +1,4 @@
-# 분석기 사용 가이드 — nsx-analyzer.py (v6)
+# 분석기 사용 가이드 — nsx-analyzer.py (v6.1)
 
 수집기(`nsx-collector.py`)는 **모으기만** 하고, 분석은 이 스크립트가 한다.
 
@@ -26,7 +26,7 @@ python3 nsx-analyzer.py --run ./run-mb-edge02-20260912-073308
 
 ```
 +======================================================================+
-|  NSX Analyzer 6.0                                                    |
+|  NSX Analyzer 6.1                                                    |
 |  run: run-mb-edge02-20260912-073308                                  |
 +======================================================================+
 |    1  overview        what this run contains                         |
@@ -96,6 +96,9 @@ python3 nsx-analyzer.py flow --dst 42.15.249.86 --dport 1813 --proto udp
   → 드롭이 늘면 경고하고, **왜 떨어졌는지**(icmp error, state-mismatch,
   seqno outside window 등)까지 보여 준다
 - DFW 세션 표 건수 추이, 적용된 규칙 수와 drop/reject 규칙 수
+
+연결 테이블과 DFW 세션 표는 **인터페이스·vNIC 마다 가장 최근 샘플을 전부**
+읽는다(파일 하나만 보면 한쪽만 보인다 — 실측으로 잡은 문제다).
 
 5튜플을 함께 주면 연결 테이블과 DFW 세션 표에서 그 플로우만 찾아 준다.
 ```
