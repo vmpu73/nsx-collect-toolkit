@@ -20,7 +20,7 @@ import re
 import sys
 import time
 
-VERSION = "6.1"
+VERSION = "6.2"
 UIW = 70
 
 # Where runs usually are, in the order they are looked for.
@@ -595,6 +595,26 @@ def analyse_flow(packets, want):
     if any(p.get("frag") for p in packets):
         info["notes"].append("  -> fragmented IP packets are present")
     return info
+
+
+def action_analyse_all(want, roots=None, limit=12):
+    """The same flow, looked for in EVERY run directory.
+
+    VPC T1 and LB T1 are often Active on different Edges of one cluster, so a
+    collection is then two run directories - one per Edge. Reading them one
+    at a time hides half of the path, which is exactly the half you are
+    looking for."""
+    runs = find_runs(roots) if roots else find_runs()
+    if not runs:
+        print("   no run directory found.")
+        return 1
+    print("   %d run directory(ies): %s" % (len(runs), ", ".join(os.path.basename(r) for r in runs)))
+    rc = 0
+    for path in runs:
+        print()
+        band("RUN  %s" % os.path.basename(path))
+        rc |= action_analyse(want, run=path, limit=limit)
+    return rc
 
 
 def action_analyse(want, run=None, files=None, limit=12):
@@ -1393,6 +1413,12 @@ HELP = """
      session          firewall connections, LB status, DFW pass/drop, flows
      report [file]    all of the above, to screen or into a file
      runs             list the run directories it can see
+
+   COLLECTED FROM SEVERAL BOXES?
+     python3 nsx-analyzer.py flow --all-runs --dst 10.1.1.10 --dport 443
+     VPC T1 and LB T1 are often Active on different Edges of one cluster, and
+     the backend VMs sit on ESXi hosts - so one investigation is several run
+     directories. --all-runs looks for the flow in every one of them.
      help             this text
 
    WHERE IT LOOKS
@@ -1470,6 +1496,7 @@ def menu():
     row("    3  state           counters, HA state, rising drops")
     row("    4  session         firewall connections, LB, DFW")
     row("    5  report          all of it, saved to a file")
+    row("    a  flow in ALL runs (several Edges / hosts at once)")
     row("")
     row("    r  pick another run        9  help")
     row("    l  list runs               q  quit")
@@ -1521,6 +1548,16 @@ def run_menu():
             default = os.path.join(RUN, "99-analysis-%s.txt" % time.strftime("%H%M%S"))
             path = ask("   write to [%s] : " % default, default)
             action_report(path)
+        elif choice == "a":
+            want = ask_tuple()
+            print()
+            print("   $ python3 nsx-analyzer.py flow --all-runs%s%s%s%s" % (
+                (" --src " + want.src) if want.src else "",
+                (" --dst " + want.dst) if want.dst else "",
+                (" --dport " + want.dport) if want.dport else "",
+                (" --proto " + want.proto) if want.proto else ""))
+            print()
+            action_analyse_all(want, roots=ASKED_ROOT or None)
         elif choice == "r":
             pick_run()
         elif choice == "l":
@@ -1587,6 +1624,9 @@ def main():
     elif action in ("flow", "analyze", "analyse"):
         if want.empty():
             want = ask_tuple()
+        if "--all-runs" in args:
+            sys.exit(action_analyse_all(want, roots=ASKED_ROOT or None,
+                                        limit=int(opt(args, "--lines") or 12)))
         sys.exit(action_analyse(want, run=RUN, limit=int(opt(args, "--lines") or 12)))
     elif action == "state":
         action_state()

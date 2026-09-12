@@ -1,4 +1,4 @@
-# 분석기 사용 가이드 — nsx-analyzer.py (v6.1)
+# 분석기 사용 가이드 — nsx-analyzer.py (v6.2)
 
 수집기(`nsx-collector.py`)는 **모으기만** 하고, 분석은 이 스크립트가 한다.
 
@@ -26,7 +26,7 @@ python3 nsx-analyzer.py --run ./run-mb-edge02-20260912-073308
 
 ```
 +======================================================================+
-|  NSX Analyzer 6.1                                                    |
+|  NSX Analyzer 6.2                                                    |
 |  run: run-mb-edge02-20260912-073308                                  |
 +======================================================================+
 |    1  overview        what this run contains                         |
@@ -71,6 +71,26 @@ python3 nsx-analyzer.py flow --dst 42.15.249.86 --dport 1813 --proto udp
 | ICMP | unreachable 사유, MTU 문제 |
 | 지점 비교 | 같은 vNIC 의 pre/post 를 비교해 **통과 / 일부 드롭 / 전량 드롭** 구분 |
 | 끝 | 같은 것을 손으로 확인할 tcpdump 명령(Edge용 vlan 분기 포함) |
+
+## 2-1. a — 여러 장비의 결과를 한 번에 (`--all-runs`)
+
+한 건의 조사가 **실행 폴더 여러 개**가 되는 경우가 많다.
+
+- VPC T1 과 LB T1 의 Active 가 **서로 다른 Edge** 인 경우 → Edge 마다 폴더 1개
+- 백엔드 VM 이 여러 ESXi 호스트에 흩어져 있는 경우 → 호스트마다 폴더 1개
+
+폴더들을 한 곳에 모아 놓고 이렇게 하면 전부 훑는다.
+
+```
+python3 nsx-analyzer.py flow --all-runs --dst 172.16.204.10 --dport 80 --proto tcp --run <모아둔폴더>
+```
+
+실측 예(Edge 2대):
+```
+2 run directory(ies): run-mb-edge01-..., run-mb-edge02-...
+  RUN run-mb-edge01-...   NOT FOUND here (0 packet(s) in the file)
+  RUN run-mb-edge02-...   292 packet(s) of this flow out of 965 in the file
+```
 
 ## 3. state — 카운터가 그 시간 동안 어떻게 움직였나
 

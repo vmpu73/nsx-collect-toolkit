@@ -1,4 +1,4 @@
-# 수집기 사용 가이드 — nsx-collector.py (v6.1)
+# 수집기 사용 가이드 — nsx-collector.py (v6.2)
 
 장비에 올릴 파일은 두 개뿐이다.
 
@@ -52,7 +52,7 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 ### NSX Edge 에서
 ```
 +======================================================================+
-|  NSX Collector 6.1   (python)                                        |
+|  NSX Collector 6.2   (python)                                        |
 |  ISCPSR-49099   edge / mb-edge02   2026-09-12 06:54:44               |
 +======================================================================+
 |    SETUP                          COLLECT                            |
@@ -184,6 +184,39 @@ python3 nsx-analyzer.py report 결과.txt
 - 결과 폴더만 있으면 되므로 **내 PC 로 가져와서** 돌려도 된다.
 
 자세한 내용은 **ANALYZER.md**, 손으로 tcpdump 를 쓰는 방법은 **ANALYSIS.md**.
+
+---
+
+## 4-0. VPC T1 과 LB T1 이 **다른 Edge** 에서 도는 경우 ★
+
+T1 서비스 라우터는 Active/Standby 라 **한쪽 노드에서만 트래픽이 흐른다.**
+그런데 라우터가 여러 개면 Active 가 노드별로 갈릴 수 있다 — VPC T1 은
+edge01, LB T1 은 edge02 같은 식이다. 두 라우터의 SR 과 인터페이스는 **양쪽
+노드에 다 존재**하므로(실측), Standby 쪽에서 캡처해도 명령은 성공하고 파일도
+생긴다. **다만 0건이다.**
+
+그래서 v6.2 는 **캡처 지점마다 이 노드가 맞는지** 따로 판정한다.
+
+`3 check` 예:
+```
+   LB T1 service   9d7af199-...   Standby  EMPTY here - that T1 is Active on the other node
+   VPC T1 uplink   9d8f5949-...   Active   capture HERE
+
+   *** The two capture points are NOT on the same Edge. ***
+     LB T1 service   Standby  -> the OTHER node (7ca6f8e1-...)
+     VPC T1 uplink   Active   -> THIS node
+   Collect on BOTH Edges: run this here for VPC T1 uplink, and run it on the
+   other Edge for LB T1 service. ...
+```
+
+- `5 start all` 도 시작 전에 지점별로 같은 판정을 찍고, 캡처 자체도 시작할 때
+  경고한다(피어 노드 UUID 포함).
+- 판정에는 `T1_LB_SR_UUID` / `T1_VPC_SR_UUID` 가 필요하다. **`2 discover` 가
+  채워 준다.** 비어 있으면 "unknown" 으로 표시하고 판정을 건너뛴다.
+- **두 Edge 에서 각각 수집하면 실행 폴더가 장비마다 생긴다.** 분석할 때는
+  둘을 한 폴더에 모아 놓고
+  `python3 nsx-analyzer.py flow --all-runs --dst ... --dport ...`
+  로 한 번에 훑으면 된다(분석기 메뉴 `a`).
 
 ---
 

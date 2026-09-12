@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "6.1"
+VERSION = "6.2"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SELF = os.path.abspath(__file__)
 CONF_PATH = os.environ.get("NSXC_CONF", os.path.join(HERE, "nsx-collector.conf"))
@@ -749,6 +749,65 @@ def edge_interfaces(sr_uuid):
     return ifaces
 
 
+def edge_ha_detail(sr_uuid):
+    """(state on this node, peer node uuid). The top "state" line is this
+    node; the "Peer Routers" block at the bottom is the other one."""
+    out = cli("get logical-router %s high-availability status" % sr_uuid)
+    state, peer = "?", ""
+    for line in out.splitlines():
+        m = re.match(r"\s*state\s*:\s*(\S+)", line)
+        if m and state == "?":
+            state = m.group(1)
+        m = re.match(r"\s*Node UUID\s*:\s*(\S+)", line)
+        if m and not peer:
+            peer = m.group(1)
+    return state, peer
+
+
+# Which service router owns each capture point, so "is this the right Edge?"
+# can be answered per point. VPC T1 and LB T1 are often Active on DIFFERENT
+# nodes of the same Edge cluster - then one capture here is always empty.
+CAPTURE_POINTS = [
+    ("LB T1 service",  "LIF_LBT1_SVC",     "T1_LB_SR_UUID",  "cap-lbt1"),
+    ("VPC T1 uplink",  "LIF_VPCT1_UPLINK", "T1_VPC_SR_UUID", "cap-vpct1"),
+]
+
+
+def edge_point_states():
+    """[(label, lif, sr, state, peer, action)] for the points that are set."""
+    out = []
+    for label, lif_key, sr_key, action in CAPTURE_POINTS:
+        lif, sr = cget(lif_key), cget(sr_key)
+        if not lif:
+            continue
+        if sr:
+            state, peer = edge_ha_detail(sr)
+        else:
+            state, peer = "unknown", ""
+        out.append((label, lif, sr, state, peer, action))
+    return out
+
+
+def edge_split_note(points):
+    """Say it plainly when the two capture points live on different nodes."""
+    states = [p[3] for p in points]
+    if len(points) < 2 or "unknown" in states:
+        return
+    here = [p for p in points if p[3] == "Active"]
+    away = [p for p in points if p[3] != "Active"]
+    if here and away:
+        print()
+        print("   *** The two capture points are NOT on the same Edge. ***")
+        for label, _lif, _sr, state, peer, action in points:
+            where = "THIS node" if state == "Active" else "the OTHER node (%s)" % (peer or "peer")
+            print("     %-15s %-8s -> %s" % (label, state, where))
+        print("   Collect on BOTH Edges: run this here for %s, and run it on the"
+              % ", ".join(p[0] for p in here))
+        print("   other Edge for %s. Each Edge writes its own run directory;"
+              % ", ".join(p[0] for p in away))
+        print("   nsx-analyzer.py reads them together with --all-runs.")
+
+
 def edge_ha_state(sr_uuid):
     out = cli("get logical-router %s high-availability status" % sr_uuid)
     for line in out.splitlines():
@@ -857,7 +916,14 @@ def edge_span_owner(session_id):
     return "other"
 
 
-def edge_capture(label, prefix, lif, expr, secs, session_id):
+def edge_capture(label, prefix, lif, expr, secs, session_id, sr_uuid=""):
+    if sr_uuid:
+        state, peer = edge_ha_detail(sr_uuid)
+        if state != "Active":
+            log("  WARNING: the T1 that owns this interface is %s on this node." % state)
+            log("           The capture will run but catch NOTHING - the traffic is")
+            log("           on the other Edge of the cluster (peer node %s)." % (peer or "?"))
+            log("           Run this same capture there, or check: nsx-collector.py check")
     run = run_dir()
     run_info(run)
     base = os.path.join(run, "pcap", "%s-%s.pcap" % (prefix, time.strftime("%H%M%S")))
@@ -996,20 +1062,28 @@ def edge_sessions_once():
 
 
 def edge_check():
-    band("CHECK 1 of 3 - is this Edge ACTIVE for the routers you care about?")
+    band("CHECK 1 of 3 - is THIS the right Edge for each capture point?")
     print("   The top 'state' line is this node. The 'Peer Routers' block at the")
     print("   bottom describes the OTHER node - reading that one gets it backwards.")
     print()
-    any_set = False
-    for label, key in (("T0", "T0_SR_UUID"), ("T1 VPC", "T1_VPC_SR_UUID"), ("T1 LB", "T1_LB_SR_UUID")):
-        uuid = cget(key)
-        if not uuid:
-            continue
-        any_set = True
-        print("   %-8s %-40s %s" % (label, uuid, edge_ha_state(uuid)))
-    if not any_set:
-        print("   No SR UUID in the config - nothing to check.")
+    points = edge_point_states()
+    for label, lif, _sr, state, peer, _action in points:
+        if state == "Active":
+            verdict = "capture HERE"
+        elif state == "unknown":
+            verdict = "unknown - set the SR UUID (or run discover) to find out"
+        else:
+            verdict = "EMPTY here - that T1 is Active on the other node"
+        print("   %-15s %-38s %-8s %s" % (label, lif, state, verdict))
+    if not points:
+        print("   No capture interface in the config - nothing to check.")
         print("   Fill it in with:  python3 nsx-collector.py discover")
+    for label, key in (("T0", "T0_SR_UUID"),):
+        uuid = cget(key)
+        if uuid:
+            state, _peer = edge_ha_detail(uuid)
+            print("   %-15s %-38s %s  (T0 is usually Active/Active)" % (label, uuid, state))
+    edge_split_note(points)
     print()
     print("   A capture on a STANDBY Edge returns zero packets.")
     print()
@@ -1729,6 +1803,18 @@ def action_start():
     print("   results -> %s" % run)
     print()
     if IS_EDGE:
+        points = edge_point_states()
+        for label, _lif, _sr, state, peer, _action in points:
+            if state == "Active":
+                print("   %-15s Active here - this capture will see traffic" % label)
+            elif state == "unknown":
+                print("   %-15s state unknown (no SR UUID in the config)" % label)
+            else:
+                print("   %-15s %s here - this capture will be EMPTY; that T1 is on"
+                      % (label, state))
+                print("                   the other Edge (peer node %s)" % (peer or "?"))
+        edge_split_note(points)
+        print()
         if cget("LIF_LBT1_SVC"):
             start_one("cap-lbt1", "lbt1", run)
         else:
@@ -2249,7 +2335,7 @@ def dispatch(action, args):
             filter_problem(expr, msg)
             sys.exit(2)
         edge_capture("lbt1-svc", "10-edge-lbt1svc", cget("LIF_LBT1_SVC"), expr, secs,
-                     cget("CAP_SESSION_LBT1") or "1")
+                     cget("CAP_SESSION_LBT1") or "1", cget("T1_LB_SR_UUID"))
     elif action == "cap-vpct1":
         if not IS_EDGE:
             die("cap-vpct1 is Edge only")
@@ -2262,7 +2348,7 @@ def dispatch(action, args):
             filter_problem(expr, msg)
             sys.exit(2)
         edge_capture("vpct1-uplink", "11-edge-vpct1uplink", cget("LIF_VPCT1_UPLINK"), expr,
-                     secs, cget("CAP_SESSION_VPCT1") or "0")
+                     secs, cget("CAP_SESSION_VPCT1") or "0", cget("T1_VPC_SR_UUID"))
     elif action in ("cap-pre", "cap-post"):
         if not IS_ESXI:
             die("%s is ESXi only" % action)
