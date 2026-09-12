@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "5.0"
+VERSION = "6.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SELF = os.path.abspath(__file__)
 CONF_PATH = os.environ.get("NSXC_CONF", os.path.join(HERE, "nsx-collector.conf"))
@@ -887,14 +887,16 @@ def edge_stats_once():
     d = os.path.join(run, "state")
     snap(os.path.join(d, "30-edge-interfaces.txt"), "get interfaces",
          ["su", "admin", "-c", "get interfaces"])
-    snap(os.path.join(d, "31-edge-interface-stats.txt"), "get interfaces stats",
-         ["su", "admin", "-c", "get interfaces stats"])
     snap(os.path.join(d, "32-edge-dataplane-cpu.txt"), "get dataplane cpu stats",
          ["su", "admin", "-c", "get dataplane cpu stats"])
-    for port in values(cget("FP_PORTS")):
+    # "get interface <name>" - NOT "... stats", and there is no
+    # "get interfaces stats" at all on NSX 4.2.4 ("% Command not found").
+    # "get interface <name>" already holds RX/TX packets, bytes, errors and
+    # drops per fastpath port, which is what was wanted.
+    for port in names(cget("FP_PORTS")):
         snap(os.path.join(d, "33-edge-port-%s-stats.txt" % port),
-             "get interface %s stats" % port,
-             ["su", "admin", "-c", "get interface %s stats" % port])
+             "get interface %s" % port,
+             ["su", "admin", "-c", "get interface %s" % port])
     srs = edge_srs()
     if srs:
         for uuid in srs:
@@ -908,8 +910,11 @@ def edge_stats_once():
     else:
         log("  no T0/T1 SR UUID in the config - per router stats skipped")
         log("  (each router costs about 2.5 s per sample, so only what you name)")
-    snap(os.path.join(d, "36-edge-system-cpu-memory.txt"), "get system-stats",
-         ["su", "admin", "-c", "get system-stats"])
+    # "get system-stats" does not exist on NSX 4.2.4 either - these two do.
+    snap(os.path.join(d, "36-edge-cpu.txt"), "get cpu-stats",
+         ["su", "admin", "-c", "get cpu-stats"])
+    snap(os.path.join(d, "37-edge-memory.txt"), "get memory",
+         ["su", "admin", "-c", "get memory"])
     log("  state sample -> %s" % d)
 
 
@@ -918,10 +923,17 @@ def edge_sessions_once():
     run_info(run)
     d = os.path.join(run, "session")
     ts = time.strftime("%H%M%S")
-    for uuid in values(cget("T1_VPC_SR_UUID")) + values(cget("T1_LB_SR_UUID")) + values(cget("T0_SR_UUID")):
+    # "get firewall <uuid> connection" wants the LOGICAL INTERFACE uuid, not
+    # the service router uuid - with an SR uuid the CLI answers "% Invalid
+    # value for argument <uuid>" and the file holds an error, not data.
+    # Measured on NSX 4.2.4, and it is why v5 collected nothing useful here.
+    for uuid in names(cget("LIF_LBT1_SVC")) + names(cget("LIF_VPCT1_UPLINK")) + names(cget("LIF_T0_UPLINK")) + names(cget("LIF_VPCT1_DOWNLINK")):
         short = uuid[:8]
         with open(os.path.join(d, "50-edge-fw-conn-count-%s-%s.txt" % (short, ts)), "w") as fh:
             fh.write(cli("get firewall %s connection count" % uuid))
+        # The table shows the NAT mapping in brackets, which is exactly what
+        # you want when a load balancer is in the path:
+        #   0x..: 172.16.204.2:54982 -> 172.16.201.12:80 (172.16.204.10:80)
         with open(os.path.join(d, "51-edge-fw-conn-table-%s-%s.txt" % (short, ts)), "w") as fh:
             fh.write(cli("get firewall %s connection" % uuid))
     lbs = values(cget("LB_UUID"))
@@ -1909,602 +1921,6 @@ def poll_loop(action):
 
 
 # ===========================================================================
-#  READING THE CAPTURES BACK - find one flow and say what happened to it
-#
-#  The pcap files are parsed here rather than shelled out to tcpdump, for one
-#  reason that bit us in the field: part of an Edge capture is 802.1Q tagged
-#  (measured: 367 of 930 packets), and a filter handed to tcpdump when READING
-#  a file silently drops those - you need "(expr) or (vlan and (expr))" every
-#  single time. This parser looks through the tag, so a flow cannot hide.
-#
-#  Supported: pcap (both byte orders, also the nanosecond variant), Ethernet,
-#  802.1Q / QinQ, IPv4, TCP / UDP / ICMP. Anything else is counted as "other".
-# ===========================================================================
-PROTO_NAME = {1: "icmp", 6: "tcp", 17: "udp"}
-TCP_FLAGS = [(0x01, "F"), (0x02, "S"), (0x04, "R"), (0x08, "P"),
-             (0x10, "A"), (0x20, "U"), (0x40, "E"), (0x80, "C")]
-
-
-def _u16(b, i):
-    return (b[i] << 8) | b[i + 1]
-
-
-def _u32(b, i):
-    return (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]
-
-
-def _ip(b, i):
-    return "%d.%d.%d.%d" % (b[i], b[i + 1], b[i + 2], b[i + 3])
-
-
-def pcap_packets(path):
-    """Yield one dict per packet, from a classic pcap OR a pcapng file.
-
-    Both are needed on the same box: tcpdump and tcpdump-uw write classic
-    pcap, while pktcap-uw writes pcapng (its files start with 0a 0d 0d 0a).
-    Never raises on a truncated file - a capture that was killed mid-write
-    still gets read up to the last whole packet.
-    """
-    try:
-        fh = open(path, "rb")
-    except OSError:
-        return
-    with fh:
-        head = fh.read(24)
-        if len(head) < 24:
-            return
-        magic = head[:4]
-        if magic == b"\x0a\x0d\x0d\x0a":
-            fh.seek(0)
-            for pkt in _pcapng_packets(fh):
-                yield pkt
-            return
-        if magic == b"\xd4\xc3\xb2\xa1":
-            endian, scale = "<", 1e-6
-        elif magic == b"\xa1\xb2\xc3\xd4":
-            endian, scale = ">", 1e-6
-        elif magic == b"\x4d\x3c\xb2\xa1":
-            endian, scale = "<", 1e-9
-        elif magic == b"\xa1\xb2\x3c\x4d":
-            endian, scale = ">", 1e-9
-        else:
-            return
-        import struct
-        rec = struct.Struct(endian + "IIII")
-        linktype = struct.unpack(endian + "I", head[20:24])[0]
-        while True:
-            hdr = fh.read(16)
-            if len(hdr) < 16:
-                return
-            sec, usec, caplen, wirelen = rec.unpack(hdr)
-            if caplen > 262144:
-                return
-            data = fh.read(caplen)
-            if len(data) < caplen:
-                return
-            pkt = {"t": sec + usec * scale, "len": wirelen, "vlan": None}
-            if linktype != 1:          # only Ethernet is decoded
-                pkt["proto"] = "other"
-                yield pkt
-                continue
-            _decode_eth(data, pkt)
-            yield pkt
-
-
-def _pcapng_packets(fh):
-    """pcapng: section header -> interface descriptions -> packet blocks.
-    Only what pktcap-uw writes is needed: SHB, IDB, EPB and simple packets."""
-    import struct
-    endian = "<"
-    tsresol, linktype = 1e-6, 1
-    while True:
-        head = fh.read(8)
-        if len(head) < 8:
-            return
-        btype = struct.unpack(endian + "I", head[:4])[0]
-        blen = struct.unpack(endian + "I", head[4:8])[0]
-        if btype == 0x0A0D0D0A:                       # section header
-            body = fh.read(4)
-            if len(body) < 4:
-                return
-            if body == b"\x4d\x3c\x2b\x1a":
-                endian = "<"
-            elif body == b"\x1a\x2b\x3c\x4d":
-                endian = ">"
-            blen = struct.unpack(endian + "I", head[4:8])[0]
-            rest = fh.read(max(0, blen - 16))
-            if len(rest) < max(0, blen - 16):
-                return
-            fh.read(4)
-            continue
-        if blen < 12 or blen > 20 * 1024 * 1024:
-            return
-        body = fh.read(blen - 12)
-        if len(body) < blen - 12:
-            return
-        fh.read(4)                                    # trailing length
-        if btype == 0x00000001 and len(body) >= 8:    # interface description
-            linktype = struct.unpack(endian + "H", body[0:2])[0]
-            opt = 8
-            while opt + 4 <= len(body):               # look for if_tsresol
-                code, olen = struct.unpack(endian + "HH", body[opt:opt + 4])
-                val = body[opt + 4:opt + 4 + olen]
-                if code == 0 :
-                    break
-                if code == 9 and olen >= 1:
-                    raw = val[0]
-                    tsresol = (2.0 ** -(raw & 0x7f)) if raw & 0x80 else (10.0 ** -raw)
-                opt += 4 + ((olen + 3) // 4) * 4
-        elif btype == 0x00000006 and len(body) >= 20:  # enhanced packet
-            _iface, tsh, tsl, caplen, wirelen = struct.unpack(endian + "IIIII", body[:20])
-            data = body[20:20 + caplen]
-            pkt = {"t": ((tsh << 32) | tsl) * tsresol, "len": wirelen, "vlan": None}
-            if linktype == 1:
-                _decode_eth(data, pkt)
-            else:
-                pkt["proto"] = "other"
-            yield pkt
-        elif btype == 0x00000003 and len(body) >= 4:   # simple packet
-            wirelen = struct.unpack(endian + "I", body[:4])[0]
-            data = body[4:]
-            pkt = {"t": 0.0, "len": wirelen, "vlan": None}
-            if linktype == 1:
-                _decode_eth(data, pkt)
-            else:
-                pkt["proto"] = "other"
-            yield pkt
-
-
-def _decode_eth(data, pkt):
-    if len(data) < 14:
-        pkt["proto"] = "other"
-        return
-    off = 12
-    etype = _u16(data, off)
-    while etype in (0x8100, 0x88a8, 0x9100) and len(data) >= off + 8:
-        pkt["vlan"] = _u16(data, off + 2) & 0x0fff
-        off += 4
-        etype = _u16(data, off)
-    off += 2
-    if etype != 0x0800 or len(data) < off + 20:
-        pkt["proto"] = "arp" if etype == 0x0806 else "other"
-        return
-    ihl = (data[off] & 0x0f) * 4
-    if ihl < 20 or len(data) < off + ihl:
-        pkt["proto"] = "other"
-        return
-    pkt["src"] = _ip(data, off + 12)
-    pkt["dst"] = _ip(data, off + 16)
-    pkt["ttl"] = data[off + 8]
-    pkt["ipid"] = _u16(data, off + 4)
-    frag = _u16(data, off + 6)
-    pkt["frag"] = bool(frag & 0x1fff) or bool(frag & 0x2000)
-    ipproto = data[off + 9]
-    pkt["proto"] = PROTO_NAME.get(ipproto, "ip%d" % ipproto)
-    iplen = _u16(data, off + 2)
-    l4 = off + ihl
-    if pkt["proto"] == "tcp" and len(data) >= l4 + 20:
-        pkt["sport"] = _u16(data, l4)
-        pkt["dport"] = _u16(data, l4 + 2)
-        pkt["seq"] = _u32(data, l4 + 4)
-        pkt["ack"] = _u32(data, l4 + 8)
-        doff = (data[l4 + 12] >> 4) * 4
-        bits = data[l4 + 13]
-        pkt["flags"] = "".join(ch for bit, ch in TCP_FLAGS if bits & bit) or "."
-        pkt["win"] = _u16(data, l4 + 14)
-        pkt["plen"] = max(0, iplen - ihl - doff)
-    elif pkt["proto"] == "udp" and len(data) >= l4 + 8:
-        pkt["sport"] = _u16(data, l4)
-        pkt["dport"] = _u16(data, l4 + 2)
-        pkt["plen"] = max(0, _u16(data, l4 + 4) - 8)
-        # RADIUS: code and identifier are the first two bytes of the payload
-        if len(data) >= l4 + 10:
-            pkt["l7code"] = data[l4 + 8]
-            pkt["l7id"] = data[l4 + 9]
-    elif pkt["proto"] == "icmp" and len(data) >= l4 + 4:
-        pkt["icmp_type"] = data[l4]
-        pkt["icmp_code"] = data[l4 + 1]
-        pkt["plen"] = max(0, iplen - ihl - 8)
-
-
-ICMP_TEXT = {0: "echo reply", 3: "unreachable", 4: "source quench",
-             5: "redirect", 8: "echo request", 11: "time exceeded"}
-ICMP_UNREACH = {0: "net", 1: "host", 2: "protocol", 3: "port",
-                4: "fragmentation needed (MTU!)", 9: "net admin prohibited",
-                10: "host admin prohibited", 13: "administratively filtered"}
-RADIUS_CODE = {1: "Access-Request", 2: "Access-Accept", 3: "Access-Reject",
-               4: "Accounting-Request", 5: "Accounting-Response",
-               11: "Access-Challenge"}
-
-
-class Tuple5(object):
-    """The 5-tuple to look for. Every field is optional - what you leave out
-    matches anything, and the flow is matched in BOTH directions."""
-
-    def __init__(self, src="", dst="", sport="", dport="", proto=""):
-        self.src, self.dst = src.strip(), dst.strip()
-        self.sport, self.dport = str(sport).strip(), str(dport).strip()
-        self.proto = proto.strip().lower()
-
-    def __str__(self):
-        parts = []
-        if self.src or self.sport:
-            parts.append("%s:%s" % (self.src or "*", self.sport or "*"))
-        if self.dst or self.dport:
-            parts.append("%s:%s" % (self.dst or "*", self.dport or "*"))
-        return "%s %s" % (self.proto or "any", " <-> ".join(parts) or "any address")
-
-    def empty(self):
-        return not (self.src or self.dst or self.sport or self.dport or self.proto)
-
-    def match(self, pkt):
-        """Returns 0 no match, 1 matches as given (forward), 2 matches with the
-        addresses swapped (the reply direction)."""
-        if self.proto and pkt.get("proto") != self.proto:
-            return 0
-        if "src" not in pkt:
-            return 0
-        fwd = ((not self.src or pkt["src"] == self.src) and
-               (not self.dst or pkt["dst"] == self.dst) and
-               (not self.sport or str(pkt.get("sport", "")) == self.sport) and
-               (not self.dport or str(pkt.get("dport", "")) == self.dport))
-        if fwd:
-            return 1
-        rev = ((not self.src or pkt["dst"] == self.src) and
-               (not self.dst or pkt["src"] == self.dst) and
-               (not self.sport or str(pkt.get("dport", "")) == self.sport) and
-               (not self.dport or str(pkt.get("sport", "")) == self.dport))
-        return 2 if rev else 0
-
-    def match_loose(self, pkt):
-        """Every address and port given must appear SOMEWHERE in the packet,
-        on either side - this is what "host X and port 80" does in tcpdump.
-        Used only when the strict 5-tuple finds nothing: a load balancer
-        talks to its backend from a random source port, so "the .2 address
-        and port 80" is a real question even though it is not a 5-tuple.
-        """
-        if self.proto and pkt.get("proto") != self.proto:
-            return 0
-        if "src" not in pkt:
-            return 0
-        ends = (pkt["src"], pkt["dst"])
-        ports = (str(pkt.get("sport", "")), str(pkt.get("dport", "")))
-        for addr in (self.src, self.dst):
-            if addr and addr not in ends:
-                return 0
-        for port in (self.sport, self.dport):
-            if port and port not in ports:
-                return 0
-        return 1 if (not self.dst or pkt["dst"] == self.dst) else 2
-
-
-def pcap_points(run):
-    """The capture points of a run directory, in reading order:
-    [(label, [files...])] - a ring buffer (.pcap0, .pcap1) is one point."""
-    pcap_dir = os.path.join(run, "pcap")
-    if not os.path.isdir(pcap_dir):
-        return []
-    groups = {}
-    for name in sorted(os.listdir(pcap_dir)):
-        m = re.match(r"(.*\.pcap)\d*$", name)
-        if not m:
-            continue
-        groups.setdefault(m.group(1), []).append(os.path.join(pcap_dir, name))
-    out = []
-    for base in sorted(groups):
-        label = re.sub(r"\.pcap$", "", os.path.basename(base))
-        out.append((label, sorted(groups[base])))
-    return out
-
-
-def point_meaning(label):
-    if label.startswith("10-edge-lbt1svc"):
-        return "Edge, LB T1 service interface (client <-> VIP and LB <-> backend)"
-    if label.startswith("11-edge-vpct1uplink"):
-        return "Edge, VPC T1 uplink (before NAT / before the LB)"
-    if label.startswith("20-dfw-pre"):
-        return "ESXi, vNIC BEFORE the DFW rules"
-    if label.startswith("21-dfw-post"):
-        return "ESXi, vNIC AFTER the DFW rules (this is what the guest sees)"
-    return "capture point"
-
-
-def analyse_flow(packets, want):
-    """Everything we can say about one flow at one capture point."""
-    fwd = [p for p in packets if p["_dir"] == 1]
-    rev = [p for p in packets if p["_dir"] == 2]
-    info = {
-        "n": len(packets), "fwd": len(fwd), "rev": len(rev),
-        "bytes_fwd": sum(p["len"] for p in fwd),
-        "bytes_rev": sum(p["len"] for p in rev),
-        "first": packets[0]["t"], "last": packets[-1]["t"],
-        "vlan": sorted(set(p["vlan"] for p in packets if p.get("vlan") is not None)),
-        "tuples": [], "notes": [], "proto": packets[0].get("proto", "?"),
-    }
-    seen = {}
-    for p in packets:
-        key = (p.get("proto"), p.get("src"), p.get("sport"), p.get("dst"), p.get("dport"))
-        seen[key] = seen.get(key, 0) + 1
-    info["tuples"] = sorted(seen.items(), key=lambda kv: -kv[1])
-
-    proto = info["proto"]
-    if proto == "tcp":
-        syn = [p for p in fwd if "S" in p["flags"] and "A" not in p["flags"]]
-        synack = [p for p in rev if "S" in p["flags"] and "A" in p["flags"]]
-        rst = [p for p in packets if "R" in p["flags"]]
-        fin = [p for p in packets if "F" in p["flags"]]
-        data_fwd = sum(p.get("plen", 0) for p in fwd)
-        data_rev = sum(p.get("plen", 0) for p in rev)
-        seqs = {}
-        retrans = 0
-        for p in fwd + rev:
-            key = (p["_dir"], p["seq"], p.get("plen", 0))
-            if p.get("plen", 0) > 0 or "S" in p["flags"]:
-                seqs[key] = seqs.get(key, 0) + 1
-                if seqs[key] > 1:
-                    retrans += 1
-        info["notes"].append("TCP: %d SYN, %d SYN-ACK, %d RST, %d FIN, payload %d B out / %d B back"
-                             % (len(syn), len(synack), len(rst), len(fin), data_fwd, data_rev))
-        if syn and not synack:
-            info["notes"].append("  -> the handshake was never answered HERE"
-                                 " (SYN %d time(s), no SYN-ACK)" % len(syn))
-        if syn and synack:
-            rtt = (synack[0]["t"] - syn[0]["t"]) * 1000
-            info["notes"].append("  -> handshake completed, SYN to SYN-ACK %.1f ms" % rtt)
-        if retrans:
-            info["notes"].append("  -> %d retransmission(s) - something was lost or slow" % retrans)
-        if rst:
-            who = "the client side" if rst[0]["_dir"] == 1 else "the server side"
-            info["notes"].append("  -> reset by %s at %s"
-                                 % (who, time.strftime("%H:%M:%S", time.localtime(rst[0]["t"]))))
-        zero = [p for p in packets if p.get("win") == 0 and "R" not in p["flags"]]
-        if zero:
-            info["notes"].append("  -> %d zero-window packet(s) - a receiver stopped reading" % len(zero))
-    elif proto == "udp":
-        pairs, rtts = 0, []
-        pending = []
-        for p in packets:
-            if p["_dir"] == 1:
-                pending.append(p)
-            elif pending:
-                req = pending.pop(0)
-                pairs += 1
-                rtts.append(p["t"] - req["t"])
-        info["notes"].append("UDP: %d out, %d back" % (len(fwd), len(rev)))
-        if fwd and not rev:
-            info["notes"].append("  -> nothing came back HERE. The request left, the answer did not.")
-        if rtts:
-            rtts.sort()
-            mid = rtts[len(rtts) // 2]
-            info["notes"].append("  -> answer time: median %.3f s, max %.3f s over %d pair(s)"
-                                 % (mid, rtts[-1], len(rtts)))
-            if mid > 5:
-                info["notes"].append("  -> that is far too slow for a request/response service."
-                                     " A stateful firewall usually drops the session after"
-                                     " 30 s, so a late answer never reaches the client.")
-        codes = {}
-        for p in packets:
-            if "l7code" in p:
-                codes[p["l7code"]] = codes.get(p["l7code"], 0) + 1
-        radius = [c for c in codes if c in RADIUS_CODE]
-        if radius and (str(want.dport) in ("1812", "1813") or str(want.sport) in ("1812", "1813")):
-            info["notes"].append("  -> looks like RADIUS: " + ", ".join(
-                "%s x%d" % (RADIUS_CODE[c], codes[c]) for c in sorted(radius)))
-    elif proto == "icmp":
-        types = {}
-        for p in packets:
-            key = (p.get("icmp_type"), p.get("icmp_code"))
-            types[key] = types.get(key, 0) + 1
-        for (t, c), n in sorted(types.items()):
-            text = ICMP_TEXT.get(t, "type %s" % t)
-            if t == 3:
-                text += " / " + ICMP_UNREACH.get(c, "code %s" % c)
-            info["notes"].append("ICMP: %s x%d" % (text, n))
-        if any(t == 3 and c == 4 for (t, c) in types):
-            info["notes"].append("  -> 'fragmentation needed' means an MTU problem on the path")
-    if info["vlan"]:
-        info["notes"].append("802.1Q tagged packets are part of this flow (vlan %s)."
-                             " A filter given to tcpdump while READING a file would drop"
-                             " them - this analysis does not." %
-                             ",".join(str(v) for v in info["vlan"]))
-    if any(p.get("frag") for p in packets):
-        info["notes"].append("  -> fragmented IP packets are present")
-    return info
-
-
-def action_analyse(want, run=None, files=None, limit=12):
-    """Find a flow in what was captured and say what is happening to it."""
-    band("FLOW ANALYSIS   %s" % want)
-    if want.empty():
-        print("   Give at least one of src / dst / sport / dport / proto.")
-        print("   python3 nsx-collector.py analyze --dst 10.1.1.10 --dport 1812 --proto udp")
-        return 1
-    if files:
-        points = [(os.path.basename(f), [f]) for f in files]
-    else:
-        run = run or latest_run()
-        if not run:
-            print("   no capture found in %s - run a capture first." % OUT)
-            return 1
-        print("   run directory: %s" % run)
-        points = pcap_points(run)
-    if not points:
-        print("   no pcap files there yet.")
-        return 1
-
-    def scan(loose):
-        out = []
-        for label, paths in points:
-            hits, total = [], 0
-            for path in paths:
-                for pkt in pcap_packets(path):
-                    total += 1
-                    direction = pkt and (want.match_loose(pkt) if loose else want.match(pkt))
-                    if direction:
-                        pkt["_dir"] = direction
-                        hits.append(pkt)
-            hits.sort(key=lambda p: p["t"])
-            out.append((label, paths, total, hits))
-        return out
-
-    results = scan(False)
-    if not any(hits for _l, _p, _t, hits in results):
-        loose = scan(True)
-        if any(hits for _l, _p, _t, hits in loose):
-            print()
-            print("   Nothing matches that exact 5-tuple, but the addresses and")
-            print("   ports you gave DO appear together - just not paired that way.")
-            print("   A load balancer, for example, reaches its backend from a")
-            print("   random source port, so \"the .2 address AND port 80\" exists")
-            print("   while \".2:80\" never does. Showing those packets instead")
-            print("   (same as tcpdump \"host ... and port ...\").")
-            results = loose
-
-    for label, paths, total, hits in results:
-        print()
-        thin()
-        print("   %s" % label)
-        print("   %s" % point_meaning(label))
-        print("   file(s): %s" % ", ".join(os.path.basename(p) for p in paths))
-        if not hits:
-            print("   NOT FOUND here  (%d packet(s) in the file)" % total)
-            continue
-        info = analyse_flow(hits, want)
-        print("   %d packet(s) of this flow out of %d in the file" % (info["n"], total))
-        print("   %s -> %s and back: %d / %d packets, %d / %d bytes"
-              % (want.src or "*", want.dst or "*", info["fwd"], info["rev"],
-                 info["bytes_fwd"], info["bytes_rev"]))
-        print("   first %s   last %s   window %.3f s"
-              % (time.strftime("%H:%M:%S", time.localtime(info["first"])),
-                 time.strftime("%H:%M:%S", time.localtime(info["last"])),
-                 info["last"] - info["first"]))
-        if len(info["tuples"]) > 1:
-            print("   addresses seen (this is where you see NAT):")
-            for (proto, src, sport, dst, dport), n in info["tuples"][:6]:
-                print("     %-4s %s:%s -> %s:%s   x%d"
-                      % (proto, src, sport, dst, dport, n))
-        for note in info["notes"]:
-            print("   " + note)
-        print("   first %d packet(s):" % min(limit, len(hits)))
-        for pkt in hits[:limit]:
-            print("     " + one_line(pkt))
-        if len(hits) > limit:
-            print("     ... %d more" % (len(hits) - limit))
-
-    # ---- what the points together say -----------------------------------
-    found = [(label, hits) for label, _p, _t, hits in results if hits]
-    print()
-    band("WHAT THE POINTS TOGETHER SAY")
-    if not found:
-        print("   This flow is in none of the captures.")
-        print("   Either it did not happen inside the window, or the capture")
-        print("   filter did not include it - check 00-run-info.txt for the")
-        print("   filter that was used.")
-        return 0
-    print("   %-34s %8s %8s %8s" % ("point", "packets", "out", "back"))
-    for label, _paths, _total, hits in results:
-        if hits:
-            info = analyse_flow(hits, want)
-            print("   %-34s %8d %8d %8d" % (label[:34], info["n"], info["fwd"], info["rev"]))
-        else:
-            print("   %-34s %8s" % (label[:34], "-"))
-    print()
-    for label, hits in found:
-        info = analyse_flow(hits, want)
-        if info["fwd"] and not info["rev"]:
-            print("   %s: requests only, no answer." % label)
-
-    # pre and post are only comparable for the SAME vNIC: a flow to web01 is
-    # not supposed to be in web02's capture, and calling that a DFW drop
-    # would be wrong (it was, until the lab showed it).
-    counts = {}
-    for label, _paths, _total, hits in results:
-        m = re.match(r"2[01]-dfw-(pre|post)-(.*)$", label)
-        if m:
-            counts.setdefault(m.group(2), {})[m.group(1)] = len(hits)
-    for nic, side in sorted(counts.items()):
-        pre_n, post_n = side.get("pre"), side.get("post")
-        if pre_n is None or post_n is None:
-            continue
-        if pre_n and not post_n:
-            print("   %s: seen BEFORE the DFW rules but not AFTER - the" % nic)
-            print("   distributed firewall dropped this flow. Check")
-            print("   session/62-dfw-rules-%s.txt and the counters in" % nic)
-            print("   session/63-dfw-passdrop-%s.txt." % nic)
-        elif pre_n and post_n < pre_n:
-            print("   %s: %d packet(s) before the DFW, %d after - part of the flow"
-                  % (nic, pre_n, post_n))
-            print("   was dropped by a rule, not all of it.")
-        elif pre_n and post_n >= pre_n:
-            print("   %s: the DFW passed this flow (%d before, %d after)."
-                  % (nic, pre_n, post_n))
-    edge_seen = any(l.startswith("1") for l, _h in found)
-    host_pre = [n for n, s in counts.items() if s.get("pre")]
-    if edge_seen and counts and not host_pre:
-        print("   Seen on the Edge but at no host vNIC here: it was lost between")
-        print("   the Edge and this host - or the VM runs on another host.")
-    print()
-    print("   The same thing by hand, if you want to check it:")
-    print("     %s -nr <file> '%s'" % ("tcpdump-uw" if IS_ESXI else "tcpdump", as_bpf(want)))
-    print("   On an Edge file add the tag arm, or tagged packets are dropped:")
-    print("     tcpdump -nr <file> '(%s) or (vlan and (%s))'" % (as_bpf(want), as_bpf(want)))
-    return 0
-
-
-def one_line(pkt):
-    stamp = time.strftime("%H:%M:%S", time.localtime(pkt["t"])) + ("%.6f" % (pkt["t"] % 1))[1:]
-    tag = " vlan%d" % pkt["vlan"] if pkt.get("vlan") is not None else ""
-    head = "%s%s %s %s" % (stamp, tag, pkt.get("src", "?"), pkt.get("proto", "?"))
-    if pkt.get("proto") == "tcp":
-        return "%s %s:%s > %s:%s [%s] seq %d ack %d win %d len %d" % (
-            stamp + tag, pkt["src"], pkt["sport"], pkt["dst"], pkt["dport"],
-            pkt["flags"], pkt["seq"], pkt["ack"], pkt["win"], pkt.get("plen", 0))
-    if pkt.get("proto") == "udp":
-        extra = ""
-        if "l7code" in pkt and pkt["l7code"] in RADIUS_CODE:
-            extra = "  %s id=%d" % (RADIUS_CODE[pkt["l7code"]], pkt.get("l7id", 0))
-        return "%s %s:%s > %s:%s udp len %d%s" % (
-            stamp + tag, pkt["src"], pkt["sport"], pkt["dst"], pkt["dport"],
-            pkt.get("plen", 0), extra)
-    if pkt.get("proto") == "icmp":
-        text = ICMP_TEXT.get(pkt.get("icmp_type"), "type %s" % pkt.get("icmp_type"))
-        if pkt.get("icmp_type") == 3:
-            text += "/" + ICMP_UNREACH.get(pkt.get("icmp_code"), str(pkt.get("icmp_code")))
-        return "%s %s > %s icmp %s" % (stamp + tag, pkt.get("src"), pkt.get("dst"), text)
-    return head
-
-
-def as_bpf(want):
-    parts = []
-    if want.proto:
-        parts.append(want.proto)
-    if want.src and want.dst:
-        parts.append("host %s and host %s" % (want.src, want.dst))
-    elif want.src:
-        parts.append("host %s" % want.src)
-    elif want.dst:
-        parts.append("host %s" % want.dst)
-    ports = [p for p in (want.sport, want.dport) if p]
-    if len(ports) == 2:
-        parts.append("port %s and port %s" % tuple(ports))
-    elif ports:
-        parts.append("port %s" % ports[0])
-    return " and ".join(parts) or "ip"
-
-
-def ask_tuple():
-    """The menu asks for the 5-tuple one field at a time - Enter = any."""
-    print("   Enter what you know. Empty = any. The reply direction is")
-    print("   matched too, so source/destination order does not matter.")
-    src = ask("   source IP        (Enter = any) : ")
-    sport = ask("   source port      (Enter = any) : ")
-    dst = ask("   destination IP   (Enter = any) : ")
-    dport = ask("   destination port (Enter = any) : ")
-    proto = ask("   protocol tcp/udp/icmp (Enter = any) : ")
-    return Tuple5(src, dst, sport, dport, proto)
-
-
-# ===========================================================================
 #  help and menu - per platform, so only what this box can do is shown
 # ===========================================================================
 EDGE_HELP = """
@@ -2527,18 +1943,17 @@ EDGE_HELP = """
      start         start every collector in the background
      status        what is running, what is left, what was produced
      watch [secs]  status on a loop
-     analyze       find one flow in the captures and say what happened to it
      stop          stop our collectors, keep the files
      wipe          stop and delete our own files
      stop|wipe --dry-run    show every decision, change nothing
      help          this text
 
-   FINDING A FLOW AFTERWARDS
-     python3 nsx-collector.py analyze --src 10.1.1.5 --dst 10.1.1.10 \
-                                      --dport 1812 --proto udp
-     Every field is optional and the reply direction is matched too. It reads
-     the pcap files itself, so 802.1Q tagged packets cannot hide from it -
-     a filter given to tcpdump when reading a file would drop them.
+   READING IT BACK  ->  nsx-analyzer.py (the other script)
+     python3 nsx-analyzer.py overview
+     python3 nsx-analyzer.py flow --src 10.1.1.5 --dport 1812 --proto udp
+     python3 nsx-analyzer.py state | session | report
+     It analyses a run directory, so it also runs on your own machine after
+     you copy the results off the box. The collector only collects.
 
    ONE COLLECTOR ON ITS OWN (same as the menu, no menu)
      python3 nsx-collector.py cap-lbt1 [secs]     LB T1 service interface
@@ -2565,18 +1980,17 @@ ESXI_HELP = """
      start         start every collector in the background
      status        what is running, what is left, what was produced
      watch [secs]  status on a loop
-     analyze       find one flow in the captures and say what happened to it
      stop          stop our collectors, keep the files
      wipe          stop and delete our own files
      stop|wipe --dry-run    show every decision, change nothing
      help          this text
 
-   FINDING A FLOW AFTERWARDS
-     python3 nsx-collector.py analyze --src 10.1.1.5 --dst 10.1.1.10 \
-                                      --dport 1812 --proto udp
-     Every field is optional and the reply direction is matched too. It
-     compares the pre and post captures, so "dropped by the DFW" and "never
-     arrived at this host" are told apart for you.
+   READING IT BACK  ->  nsx-analyzer.py (the other script)
+     python3 nsx-analyzer.py overview
+     python3 nsx-analyzer.py flow --dst 10.1.1.50 --dport 8080 --proto tcp
+     python3 nsx-analyzer.py state | session | report
+     It compares the pre and post captures for you, and also runs on your own
+     machine after you copy the results off the host. The collector collects.
 
    ONE COLLECTOR ON ITS OWN (same as the menu, no menu)
      python3 nsx-collector.py cap-pre [secs]      before the DFW rules
@@ -2630,9 +2044,7 @@ def menu():
         row("      u  capture VPC T1 uplink       8  stop + delete files")
         row("      t  state sample once           d  dry run (show only)")
         row("      e  session sample once         9  help    q  quit")
-        row("")
-        row("    ANALYSE")
-        row("      f  find a flow (5-tuple) in what was captured")
+
     else:
         row("    SETUP                          COLLECT")
         row("      1  config                       5  start all")
@@ -2645,9 +2057,7 @@ def menu():
         row("      u  capture DFW post            8  stop + delete files")
         row("      t  state sample once           d  dry run (show only)")
         row("      e  DFW sample once             9  help    q  quit")
-        row("")
-        row("    ANALYSE")
-        row("      f  find a flow (5-tuple) in what was captured")
+
     row("")
     rule()
 
@@ -2693,17 +2103,6 @@ def run_menu():
             action_stop("delete")
         elif choice == "d":
             action_stop("delete", dry=True)
-        elif choice == "f":
-            want = ask_tuple()
-            print()
-            print("   $ python3 nsx-collector.py analyze%s%s%s%s%s" % (
-                (" --src " + want.src) if want.src else "",
-                (" --sport " + want.sport) if want.sport else "",
-                (" --dst " + want.dst) if want.dst else "",
-                (" --dport " + want.dport) if want.dport else "",
-                (" --proto " + want.proto) if want.proto else ""))
-            print()
-            action_analyse(want)
         elif choice == "9":
             action_help()
         elif choice in single:
@@ -2775,14 +2174,12 @@ def dispatch(action, args):
     elif action == "wipe":
         sys.exit(action_stop("delete", dry))
     elif action in ("analyze", "analyse", "flow"):
-        want = Tuple5(opt(args, "--src"), opt(args, "--dst"), opt(args, "--sport"),
-                      opt(args, "--dport"), opt(args, "--proto"))
-        pcaps = [a for a in rest if a.endswith(".pcap") or re.search(r"\.pcap\d*$", a)]
-        if want.empty() and not pcaps:
-            want = ask_tuple()
-        sys.exit(action_analyse(want, run=opt(args, "--run") or None,
-                                files=pcaps or None,
-                                limit=int(opt(args, "--lines") or 12)))
+        print("Analysis moved to its own script - the collector only collects now:")
+        print("    python3 nsx-analyzer.py flow --src .. --dst .. --dport .. --proto ..")
+        print("    python3 nsx-analyzer.py overview | state | session | report")
+        print("It reads the run directory, so it also runs on your own machine")
+        print("after   scp -r root@<box>:%s/run-... ." % OUT)
+        sys.exit(2)
     elif action in ("help", "-h", "--help"):
         action_help()
     # ---- the collectors -------------------------------------------------

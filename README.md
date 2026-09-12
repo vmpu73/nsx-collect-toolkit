@@ -3,17 +3,21 @@
 On-box collection for **NSX Edge** and **ESXi**, for troubleshooting a
 load-balanced service end to end.
 
-Two files, one menu, both platforms:
+Two scripts, each with its own menu. One collects, the other reads it back:
 
 ```
-nsx-collector.py      the whole tool - menu and every collector
+nsx-collector.py      collection - captures, counters, session tables
 nsx-collector.conf    the only thing you edit - or let "discover" fill it in
+nsx-analyzer.py       analysis - packets, state and sessions of a run
 ```
 
-A POSIX sh version of the same tool (`nsx-collector.sh`, same config file) is
-kept as a fallback for a box where python is not wanted. `discover` is python
-only. Korean step-by-step guide: **GUIDE.md**; packet analysis recipes:
-**ANALYSIS.md**.
+The collector runs on the box being investigated (NSX Edge or ESXi). The
+analyzer only needs the run directory, so it also runs on your own machine
+after `scp -r`. A POSIX sh version of the collector (`nsx-collector.sh`, same
+config file) is kept as a fallback where python is not wanted.
+
+Korean step-by-step guides: **GUIDE.md** (collector), **ANALYZER.md**
+(analyzer); packet analysis recipes by hand: **ANALYSIS.md**.
 
 Nothing is installed on the target. It uses what is already on an NSX Edge
 (sh, tcpdump, the admin CLI) and on ESXi (busybox sh, pktcap-uw, tcpdump-uw,
@@ -119,10 +123,15 @@ pktcap-uw has no `or` - so every combination of protocol x port x address
 becomes its own capture and its own file. Two ports x two addresses x two
 VMs x pre/post is 16 files. That is why `FILTER` exists.
 
-## Finding one flow afterwards
+## Reading it back: nsx-analyzer.py
 
 ```
-python3 nsx-collector.py analyze --dst 10.1.1.10 --dport 1812 --proto udp
+python3 nsx-analyzer.py                      the menu
+python3 nsx-analyzer.py overview             what this run contains
+python3 nsx-analyzer.py flow --dst 10.1.1.10 --dport 1812 --proto udp
+python3 nsx-analyzer.py state                counters, HA state, rising drops
+python3 nsx-analyzer.py session              firewall connections, LB, DFW
+python3 nsx-analyzer.py report out.txt       all of it, into a file
 ```
 
 Every field is optional and the reply direction is matched too. It reads the
@@ -130,7 +139,7 @@ pcap files itself - classic pcap from tcpdump and the pcapng that pktcap-uw
 writes - so 802.1Q tagged packets cannot hide from it, which they do when a
 filter is handed to tcpdump while reading a file.
 
-It reports, per capture point: how many packets of that flow are there, in
+**flow** reports, per capture point: how many packets of that flow are there, in
 which direction, the address pairs actually seen (this is where NAT shows
 up), and then what is happening - TCP handshake completed or never answered,
 retransmissions, who sent the RST, UDP request/response times (with a
@@ -139,6 +148,16 @@ session), ICMP unreachable reasons, RADIUS message types. Finally it compares
 the same vNIC before and after the DFW, so "the firewall dropped it" and
 "it never arrived on this host" are told apart - and prints the tcpdump
 command to check it by hand.
+
+**state** shows what the counters did: the HA state of each router per sample
+(a flip mid-window explains a sudden stop), interface and logical-router
+counters with their change, and any error/drop counter that is *rising*.
+
+**session** reads the tables: the Edge connection table with the NAT mapping
+it holds (`172.16.204.2:54982 -> 172.16.201.12:80 (172.16.204.10:80)`),
+half-open sessions, connection counts per interface over the window, load
+balancer state with virtual server and pool members up or down, and on ESXi
+the DFW pass/drop counters in packets with the drop reasons behind them.
 
 ## Where the results go
 

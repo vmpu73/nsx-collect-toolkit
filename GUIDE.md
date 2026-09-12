@@ -1,11 +1,15 @@
-# 사용 가이드 (v5, 파이썬)
+# 수집기 사용 가이드 — nsx-collector.py (v6)
 
 장비에 올릴 파일은 두 개뿐이다.
 
 ```
-nsx-collector.py      메뉴와 모든 수집 기능
+nsx-collector.py      수집 메뉴와 모든 수집 기능
 nsx-collector.conf    편집하는 파일 (직접 안 채워도 된다 → 2번 discover)
 ```
+
+**수집기는 모으기만 한다.** 모은 것을 해석하는 일은 `nsx-analyzer.py` 가
+맡는다(→ **ANALYZER.md**). 분석기는 장비에서도, 결과를 가져온 내 PC 에서도
+돌아간다.
 
 실행은 항상 이렇게 한다.
 
@@ -48,7 +52,7 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 ### NSX Edge 에서
 ```
 +======================================================================+
-|  NSX Collector 5.0   (python)                                        |
+|  NSX Collector 6.0   (python)                                        |
 |  ISCPSR-49099   edge / mb-edge02   2026-09-12 06:54:44               |
 +======================================================================+
 |    SETUP                          COLLECT                            |
@@ -61,9 +65,6 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 |      u  capture VPC T1 uplink       8  stop + delete files           |
 |      t  state sample once           d  dry run (show only)           |
 |      e  session sample once         9  help    q  quit               |
-|                                                                      |
-|    ANALYSE                                                           |
-|      f  find a flow (5-tuple) in what was captured                   |
 +======================================================================+
 ```
 
@@ -74,9 +75,6 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 |      u  capture DFW post            8  stop + delete files           |
 |      t  state sample once           d  dry run (show only)           |
 |      e  DFW sample once             9  help    q  quit               |
-|                                                                      |
-|    ANALYSE                                                           |
-|      f  find a flow (5-tuple) in what was captured                   |
 ```
 
 ---
@@ -98,7 +96,7 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 | **8** | stop + delete | 멈춘 뒤 **우리 폴더만** 지운다 | 멈춤 + 삭제 |
 | **d** | dry run | 8번이 무엇을 멈추고 지울지 **보여만 준다.** 아무것도 바꾸지 않는다 | 아니오 |
 | **9** | help | 이 장비에서 무엇을 모으는지, 동작 목록 | 아니오 |
-| **f** | find a flow | **5튜플을 넣으면 수집한 pcap 에서 그 플로우를 찾아 무슨 일이 벌어졌는지 판정해 준다.** 아래 4-1장 | 아니오 |
+(분석 기능은 v6 부터 `nsx-analyzer.py` 로 분리했다 → ANALYZER.md)
 
 ---
 
@@ -165,44 +163,22 @@ FILTER="net 10.1.1.0/28 and udp"
 
 ---
 
-## 4-1. f — 5튜플로 플로우 찾기 (수집 후 분석)
+## 4-1. 모은 다음에는 — 분석기로
 
-메뉴에서 `f`, 또는 명령으로:
+수집이 끝나면 분석은 별도 스크립트가 한다.
 
 ```
-python3 nsx-collector.py analyze --dst 172.16.204.10 --dport 80 --proto tcp
-python3 nsx-collector.py analyze --src 10.81.1.112 --dport 1813 --proto udp
-python3 nsx-collector.py analyze --dst 10.1.1.50 --dport 8080 --proto tcp --run <실행폴더>
-python3 nsx-collector.py analyze --dport 443 <파일.pcap0>      # 파일을 직접 지정
+python3 nsx-analyzer.py                 메뉴 (overview / flow / state / session / report)
+python3 nsx-analyzer.py flow --dst 172.16.204.10 --dport 80 --proto tcp
+python3 nsx-analyzer.py report 결과.txt
 ```
 
-- 값은 **전부 선택**이다. 넣지 않은 항목은 아무거나 맞는 것으로 본다.
-- **응답 방향도 같이 찾는다.** 출발지/목적지 순서를 고민할 필요가 없다.
-- 정확한 5튜플로 못 찾으면, `host X and port Y` 방식으로 한 번 더 찾아서
-  "짝이 그렇게 지어지지 않는다"고 알려 준다(LB SNAT 처럼 임의 포트를 쓰는 경우).
-- **pcap 을 직접 해석한다.** 그래서 Edge 파일의 VLAN 태그 패킷이 빠지지 않고,
-  pktcap-uw 가 만드는 pcapng 도 그대로 읽는다.
+- 5튜플로 플로우를 찾아 **어느 지점에서 무슨 일이 있었는지** 판정한다.
+- 상태 카운터(HA 전환, 늘어난 드롭)와 세션 테이블(NAT 매핑, LB 풀 상태,
+  DFW pass/drop 과 드롭 사유)도 함께 읽어 준다.
+- 결과 폴더만 있으면 되므로 **내 PC 로 가져와서** 돌려도 된다.
 
-판정해 주는 것:
-
-| 종류 | 내용 |
-|---|---|
-| 공통 | 지점별 건수·방향·바이트, 첫/마지막 시각, 관찰된 주소 조합(= NAT 가 보이는 곳) |
-| TCP | SYN/SYN-ACK/RST/FIN 수, 핸드셰이크 성공 여부와 RTT, 재전송, 제로 윈도우, 누가 끊었는지 |
-| UDP | 요청/응답 수, 응답 시간 중앙값·최대, **30초를 넘으면 방화벽 세션 만료 경고**, RADIUS 메시지 종류 |
-| ICMP | unreachable/MTU 등 종류·코드 해석 |
-| 지점 비교 | 같은 vNIC 의 pre/post 를 비교해 **DFW 통과 / 일부 드롭 / 전량 드롭** 구분, Edge 에는 있는데 호스트에 없음 |
-| 끝 | 같은 것을 손으로 확인할 tcpdump 명령(태그 분기 포함)을 그대로 출력 |
-
-예시 출력:
-```
-   20-dfw-pre-web01-eth0     355 packet(s) of this flow out of 718 in the file
-   TCP: 37 SYN, 37 SYN-ACK, 8 RST, 58 FIN, payload 4105 B out / 8141 B back
-     -> handshake completed, SYN to SYN-ACK 0.2 ms
-   web01-eth0: the DFW passed this flow (355 before, 355 after).
-```
-
-케이스별 tcpdump/tcpdump-uw 사용법은 **ANALYSIS.md** 에 따로 정리했다.
+자세한 내용은 **ANALYZER.md**, 손으로 tcpdump 를 쓰는 방법은 **ANALYSIS.md**.
 
 ---
 
@@ -247,8 +223,7 @@ python3 nsx-collector.py rehearse            캡처 없이 1회 수집
 python3 nsx-collector.py start               전부 백그라운드로 시작
 python3 nsx-collector.py status              진행 상황
 python3 nsx-collector.py watch 5             5초마다 새로 그리기
-python3 nsx-collector.py analyze --dst .. --dport .. --proto ..
-                                            수집한 pcap 에서 플로우 찾기
+(분석은 nsx-analyzer.py 로: overview / flow / state / session / report)
 python3 nsx-collector.py stop                중지 (파일 보존)
 python3 nsx-collector.py wipe                중지 + 우리 파일 삭제
 python3 nsx-collector.py stop --dry-run      판단만 보여 주기
