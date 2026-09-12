@@ -2,11 +2,10 @@
 *.pcap
 *.pcap[0-9]
 *.pcap[0-9][0-9]
-urd-out/
-stats-*/
-sessions-*/
-dfw-*/
-.urd-end-*
+nsx-collect/
+run-*/
+.nsxc-end-*
+.nsxc-run
 
 # site specific configs - copy the .conf and fill it in locally
 *.conf.local

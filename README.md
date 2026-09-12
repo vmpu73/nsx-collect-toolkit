@@ -1,62 +1,112 @@
-# nsx-collect-toolkit
+# nsx-collector
 
-On-box packet capture and state collection for **NSX Edge** and **ESXi**,
-for troubleshooting a load-balanced service end to end.
+On-box collection for **NSX Edge** and **ESXi**, for troubleshooting a
+load-balanced service end to end.
 
-Nothing is installed on the target. The scripts use only what is already on
-an NSX Edge (bash, tcpdump, the admin CLI) and on ESXi (busybox sh,
-pktcap-uw, vsipioctl), so they can be dropped onto a production box and run.
-
-## Why
-
-When a service behind an NSX load balancer loses traffic, the question is
-always *where* it was lost. This collects the same window from four points at
-once, so the answer is in the files rather than in a guess:
+Two files, one menu, both platforms:
 
 ```
-client -> [T0] -> VPC T1 uplink -> LB T1 service IF -> worker VM
-                        (1)              (2)            (3) DFW pre
-                                                        (4) DFW post
+nsx-collector.sh      the whole tool - menu and every collector
+nsx-collector.conf    the only thing you edit
 ```
 
-A packet present at (2) but absent at (3) was lost by the load balancer.
-Present at DFW pre but absent at post means a firewall rule dropped it.
+Nothing is installed on the target. It uses what is already on an NSX Edge
+(sh, tcpdump, the admin CLI) and on ESXi (busybox sh, pktcap-uw, tcpdump-uw,
+vsipioctl), so it can be dropped onto a production box and run.
 
 ## Quick start
 
 ```bash
-# on the Edge
-tar xzf nsx-collect-toolkit.tgz
-cd edge && vi urd-edge.conf        # fill in the placeholders
-bash urd-edge.sh                   # menu
-
-# on the ESXi host
-cd esxi && vi urd-esxi.conf
-sh urd-esxi.sh                     # menu
+tar xzf nsx-collector-<version>.tgz          # BINARY transfer, unpack on the box
+vi nsx-collector.conf                        # fill in what that box needs
+sh nsx-collector.sh                          # the menu
 ```
+
+Always start it with `sh nsx-collector.sh`. A hardened ESXi host refuses
+`./nsx-collector.sh` with *Operation not permitted* (`execInstalledOnly`:
+only files installed from a VIB may be executed directly). Running it
+through `sh` is unaffected.
 
 ```
 +======================================================================+
-|  URD  Collection Toolkit                                             |
-|  <CASE_ID>   NSX Edge / <edge01>   2026-09-10 09:00:00               |
+|  NSX Collector 3.0                                                   |
+|  ISCPSR-49099   esxi / esx01   2026-09-12 03:24:13                   |
 +======================================================================+
-|                                                                      |
 |    SETUP                        RUN                                  |
-|      1  config                    4  start all                       |
-|      2  check                     5  start one                       |
-|      3  rehearse   (once)                                            |
-|                                                                      |
-|    MONITOR                      FINISH                               |
-|      6  status                    7  stop            keep files      |
-|      w  watch      (auto)         8  stop + delete   remove files    |
-|                                                                      |
-|      9  help                      q  quit                            |
-|                                                                      |
+|      1  config                    5  start all                       |
+|      2  selftest                  6  status                          |
+|      3  check / VM map            w  watch                           |
+|      4  rehearse                                                     |
+|    FINISH                                                            |
+|      7  stop          keep files   9  help                           |
+|      8  stop + delete files        q  quit                           |
+|      d  dry run - show what 8 would stop and delete                  |
 +======================================================================+
 ```
 
 Every action prints the command it is about to run, so you can see what is
 being executed on a production box - and learn the commands.
+
+## What it collects
+
+| on an NSX Edge | on an ESXi host |
+|---|---|
+| capture on the LB T1 service interface (span mirror + tcpdump) | DFW capture **before** the rules (pre) |
+| capture on the VPC T1 uplink | DFW capture **after** the rules (post) |
+| interface / dataplane / CPU / memory counters | switch port and uplink NIC counters |
+| per-router interface stats and HA state | DFW flow table, applied rules, pass/drop counters |
+| firewall connection tables, LB status / pools / virtual servers | |
+
+A packet present at the Edge but absent at the ESXi pre capture was lost on
+the way to the host. Present at pre but absent at post means a DFW rule
+dropped it.
+
+## What to capture - two ways
+
+**A free expression** - anything tcpdump understands, with `and`, `or`,
+`not` and brackets:
+
+```sh
+FILTER="host 10.1.1.10 and (udp port 1812 or udp port 1813)"
+FILTER="(host 10.1.1.10 or host 10.1.1.11) and not tcp port 22"
+FILTER="net 10.1.1.0/28 and udp"
+```
+
+* `host` / `net` may be left out in front of an address - it is put in for
+  you. A bare address is a syntax error for tcpdump, and worse,
+  `port 80 and 10.1.1.10` parses but matches nothing.
+* `and` and `or` have the **same** precedence and are read left to right,
+  so `a or b and c` means `(a or b) and c`. Use brackets.
+* The expression is syntax-checked before anything starts.
+* On ESXi the packets are filtered through `tcpdump-uw`, so a free
+  expression gives **one file per vNIC and stage** - no file explosion.
+
+**Or the single fields** - `HOSTS`, `PROTO`, `PORTS` and the per-leg ones.
+Each may be empty or hold several values (`PORTS="1812 1813"`). Empty means
+that condition is left out; empty everywhere captures every packet.
+
+On ESXi the single fields are turned into `pktcap-uw` options, and
+pktcap-uw has no `or` - so every combination of protocol x port x address
+becomes its own capture and its own file. Two ports x two addresses x two
+VMs x pre/post is 16 files. That is why `FILTER` exists.
+
+## Where the results go
+
+One collection is one directory, and every file name says what it is:
+
+```
+<OUT>/run-<tag>-<date>-<time>/
+   00-run-info.txt                     what was run, the filter, this legend
+   pcap/  10-edge-lbt1svc-<time>.pcap0     Edge, LB T1 service interface
+          11-edge-vpct1uplink-<time>.pcap0 Edge, VPC T1 uplink
+          20-dfw-pre-<vm>-<nic>.pcap0      ESXi, before the DFW rules
+          21-dfw-post-<vm>-<nic>.pcap0     ESXi, after the DFW rules
+   state/ 30..39 Edge counters, 40..49 ESXi counters
+   session/ 50..59 Edge firewall + LB state, 60..69 ESXi DFW flows/rules
+```
+
+Collectors started separately join the run that is already open, so pre and
+post captures and the pollers never end up scattered.
 
 ## Design rules
 
@@ -65,64 +115,40 @@ not an environment assessment. Empty settings are skipped, never expanded to
 "everything". One NSX logical router costs about 2.5 s of CLI time and a
 production Edge can host hundreds of them.
 
-**Stopping is safe.** The cleanup matches processes by their *output path*,
-never by program name, so a capture started by someone else is never killed.
-It releases only the span sessions named in the config, validates the output
-path before deleting anything, and removes only its own subtrees.
+**Stopping is safe.** Only processes started by this script, or writing into
+its own run directory, are ever signalled - there is no `killall` in the
+file. A span session is released only when it mirrors a LIF from *this*
+config; one somebody else created is reported and left alone. Captures get
+SIGINT first so the pcap closes cleanly. Files are deleted only from
+directories holding our own `00-run-info.txt`, and never while a collector is
+still running. `stop --dry-run` shows every decision and changes nothing.
 
 **Pure ASCII, fixed 72 columns.** No box drawing, no colour, no `tput` -
 the ESXi console mangles anything above 7 bit and has no `tput`.
 
 **It refuses to fill the box.** ESXi `/tmp` is a ramdisk of about 250 MB -
-host memory, not disk. The capture ring buffer budget is checked before the
-capture starts, and the polling loops stop themselves at a free-space floor.
+host memory, not disk. The ring buffer budget is checked before the capture
+starts and shrunk to fit, and the polling loops stop at a free-space floor.
 
-## Layout
+**POSIX sh, one file.** The same file runs on the ESXi busybox shell and on
+the Edge. No bash syntax, no python, nothing to install - and one file is
+one thing to transfer, which is how it broke in the field before.
 
-```
-edge/   urd-edge.sh              menu - the only file you need to remember
-        urd-edge.conf            edit this
-        urd-edge-cap-lbt1-svc.sh      LB T1 service interface capture
-        urd-edge-cap-vpct1-uplink.sh  VPC T1 uplink capture
-        urd-edge-stats.sh             interface / CPU / memory counters
-        urd-edge-sessions.sh          connection and LB session tables
-        urd-edge-cleanup.sh           stop and clean up
-        urd-edge-lib.sh               shared functions - do not run
+## If it will not start
 
-esxi/   urd-esxi.sh              menu
-        urd-esxi.conf            edit this
-        urd-esxi-cap-dfw-pre.sh       capture before the DFW rules
-        urd-esxi-cap-dfw-post.sh      capture after the DFW rules
-        urd-esxi-stats.sh             NIC and switch port counters
-        urd-esxi-dfw-sessions.sh      DFW flows, rules, pass/drop counters
-        urd-esxi-cleanup.sh           stop and clean up
-        urd-esxi-lib.sh               shared functions - do not run
-        _cap-dfw.sh                   shared capture body - do not run
-```
-
-`RUNBOOK.md` is the field procedure. `REFERENCE.md` explains what each file
-does and why.
-
-## Capture method on the Edge
-
-Rather than the admin CLI `start capture`, which cannot be stopped cleanly
-and loses files, this uses a span mirror plus a normal tcpdump:
-
-```
-set capture session <N> interface <LIF> direction dual   # admin CLI
-  -> creates the Linux interface span-<N>
-tcpdump -nei span-<N> -Z root -C <MB> -W <n> -w <file> <filter>
-del capture session <N>                                  # admin CLI
-```
-
-`-Z root` is required: tcpdump drops privileges and then cannot create the
-next file in the ring. A span session created on one Edge also appears on the
-other Edge of the cluster, so the cleanup has to run on every Edge.
+| message | cause |
+|---|---|
+| `line 1: syntax error` / `line 1: xi.sh: not found` | the file arrived with CR line endings (a messenger or a Windows editor). Transfer the .tgz in **binary** and unpack on the box. nsx-collector.sh checks itself and says so. |
+| `Operation not permitted` | you ran `./nsx-collector.sh` on a hardened ESXi. Use `sh nsx-collector.sh`. |
+| `can't open 'nsx-collector.sh'` | wrong directory - `cd` to where you unpacked it. |
+| `REQUIRED setting is empty` | Edge: no `LIF_*`; ESXi: no `WORKER_VMS`. Everything else may stay empty. |
 
 ## Status
 
-Verified end to end on NSX 4.2.4 (VM Edge) and ESXi 8, against a one-arm load
-balancer with SNAT and a DFW-protected backend.
+Verified end to end on NSX 4.2.4 (VM Edge) and ESXi 8.0.3, against a one-arm
+load balancer with SNAT and a DFW-protected backend: empty config, several
+values per field, and free `FILTER` expressions, plus the stop/dry-run/wipe
+path with a foreign span session present.
 
 ## Licence
 
