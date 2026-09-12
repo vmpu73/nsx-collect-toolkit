@@ -6,9 +6,13 @@ load-balanced service end to end.
 Two files, one menu, both platforms:
 
 ```
-nsx-collector.sh      the whole tool - menu and every collector
-nsx-collector.conf    the only thing you edit
+nsx-collector.py      the whole tool - menu and every collector
+nsx-collector.conf    the only thing you edit - or let "discover" fill it in
 ```
+
+A POSIX sh version of the same tool (`nsx-collector.sh`, same config file) is
+kept as a fallback for a box where python is not wanted. `discover` is python
+only. Korean step-by-step guide: **GUIDE.md**.
 
 Nothing is installed on the target. It uses what is already on an NSX Edge
 (sh, tcpdump, the admin CLI) and on ESXi (busybox sh, pktcap-uw, tcpdump-uw,
@@ -18,34 +22,42 @@ vsipioctl), so it can be dropped onto a production box and run.
 
 ```bash
 tar xzf nsx-collector-<version>.tgz          # BINARY transfer, unpack on the box
-vi nsx-collector.conf                        # fill in what that box needs
-sh nsx-collector.sh                          # the menu
+python3 nsx-collector.py                     # the menu - start here
+#   2 discover   reads the box and fills the config in for you
+#   2 selftest   everything that has to be right before a run
+#   5 start all  capture + state, in the background
 ```
 
-Always start it with `sh nsx-collector.sh`. A hardened ESXi host refuses
-`./nsx-collector.sh` with *Operation not permitted* (`execInstalledOnly`:
-only files installed from a VIB may be executed directly). Running it
-through `sh` is unaffected.
+Always start it with `python3 nsx-collector.py`. A hardened ESXi host refuses
+`./nsx-collector.py` with *Operation not permitted* (`execInstalledOnly`:
+only files installed from a VIB may be executed directly). Running it through
+the interpreter is unaffected. ESXi 8.0.3 ships python 3.11, an NSX 4.2 Edge
+3.10.
 
 ```
 +======================================================================+
-|  NSX Collector 3.0                                                   |
-|  ISCPSR-49099   esxi / esx01   2026-09-12 03:24:13                   |
+|  NSX Collector 4.0   (python)                                        |
+|  ISCPSR-49099   esxi / esx01   2026-09-12 06:56:06                   |
 +======================================================================+
-|    SETUP                        RUN                                  |
-|      1  config                    5  start all                       |
-|      2  selftest                  6  status                          |
-|      3  check / VM map            w  watch                           |
-|      4  rehearse                                                     |
-|    FINISH                                                            |
-|      7  stop          keep files   9  help                           |
-|      8  stop + delete files        q  quit                           |
-|      d  dry run - show what 8 would stop and delete                  |
+|    SETUP                          COLLECT                            |
+|      1  config                       5  start all                    |
+|      2  discover (fill config)       6  status                        |
+|      3  check / VM map               w  watch                        |
+|      4  rehearse (no capture)                                        |
+|    ONE AT A TIME                  FINISH                             |
+|      c  capture DFW pre             7  stop        keep files        |
+|      u  capture DFW post            8  stop + delete files           |
+|      t  state sample once           d  dry run (show only)           |
+|      e  DFW sample once             9  help    q  quit               |
 +======================================================================+
 ```
 
-Every action prints the command it is about to run, so you can see what is
-being executed on a production box - and learn the commands.
+The menu shows only what THIS box can do - the Edge menu has "capture LB T1
+service" and "capture VPC T1 uplink" where the ESXi menu has "capture DFW
+pre/post". Every item is also one command of its own
+(`python3 nsx-collector.py cap-pre`), and the menu prints that command
+before it runs it - so you can see what is being executed on a production
+box, and learn the commands.
 
 ## What it collects
 
@@ -60,6 +72,22 @@ being executed on a production box - and learn the commands.
 A packet present at the Edge but absent at the ESXi pre capture was lost on
 the way to the host. Present at pre but absent at post means a DFW rule
 dropped it.
+
+## Filling the config in: discover
+
+`discover` reads the box and offers what it found - no UUID hunting:
+
+* on an **NSX Edge**: the load balancers with their VIPs, then the virtual
+  servers of the one you pick, then the T1 in front of it. It fills in
+  `LB_UUID`, `T1_LB_SR_UUID`, `LIF_LBT1_SVC`, `VIP`, `SVC_PORT`, `PROTO`,
+  `LB_POOL_UUIDS`, `LB_SNAT_IP`, `NODE_PORT`, `T1_VPC_SR_UUID`,
+  `LIF_VPCT1_UPLINK`, `T0_SR_UUID` - and shows the HA state of the SR, so
+  you know straight away whether this is the Active node.
+* on an **ESXi host**: every VM that has a DFW filter, plus the uplink NICs
+  that are Up -> `WORKER_VMS`, `UPLINK_NICS`.
+
+It shows the proposed values, marks what changes, asks y/N, keeps every
+comment in the file and backs the original up as `nsx-collector.conf.bak`.
 
 ## What to capture - two ways
 
@@ -130,25 +158,27 @@ the ESXi console mangles anything above 7 bit and has no `tput`.
 host memory, not disk. The ring buffer budget is checked before the capture
 starts and shrunk to fit, and the polling loops stop at a free-space floor.
 
-**POSIX sh, one file.** The same file runs on the ESXi busybox shell and on
-the Edge. No bash syntax, no python, nothing to install - and one file is
-one thing to transfer, which is how it broke in the field before.
+**One file, standard library only.** The same file runs on ESXi and on the
+Edge - nothing to install, no pip, no modules. One file is also one thing to
+transfer, which is how it broke in the field before.
 
 ## If it will not start
 
 | message | cause |
 |---|---|
-| `line 1: syntax error` / `line 1: xi.sh: not found` | the file arrived with CR line endings (a messenger or a Windows editor). Transfer the .tgz in **binary** and unpack on the box. nsx-collector.sh checks itself and says so. |
-| `Operation not permitted` | you ran `./nsx-collector.sh` on a hardened ESXi. Use `sh nsx-collector.sh`. |
-| `can't open 'nsx-collector.sh'` | wrong directory - `cd` to where you unpacked it. |
-| `REQUIRED setting is empty` | Edge: no `LIF_*`; ESXi: no `WORKER_VMS`. Everything else may stay empty. |
+| `line 1: syntax error` / `line 1: xi.sh: not found` | the shell version arrived with CR line endings (a messenger or a Windows editor). Transfer the .tgz in **binary** and unpack on the box. The python version tolerates CR, and the sh version checks itself and says so. |
+| `Operation not permitted` | you ran `./nsx-collector.py` on a hardened ESXi. Use `python3 nsx-collector.py`. |
+| `config not found` | the config must sit next to the script, or set `NSXC_CONF=/path/nsx-collector.conf`. |
+| `REQUIRED setting is empty` | Edge: no `LIF_*`; ESXi: no `WORKER_VMS`. Run `discover`. Everything else may stay empty. |
 
 ## Status
 
 Verified end to end on NSX 4.2.4 (VM Edge) and ESXi 8.0.3, against a one-arm
 load balancer with SNAT and a DFW-protected backend: empty config, several
-values per field, and free `FILTER` expressions, plus the stop/dry-run/wipe
-path with a foreign span session present.
+values per field, free `FILTER` expressions, an invalid expression refused,
+`discover` writing the config on both platforms, a capture stopped in the
+middle of its window, and the stop/dry-run/wipe path with a foreign span
+session present (it survived).
 
 ## Licence
 

@@ -7,12 +7,34 @@
 
 ## 1. 파일 구성
 
-파일은 두 개뿐이다.
+장비에 올릴 파일은 두 개뿐이다.
 
 ```
-nsx-collector.sh      메뉴와 모든 수집 기능이 들어 있는 하나의 스크립트
-nsx-collector.conf    편집하는 것은 이것뿐
+nsx-collector.py      메뉴와 모든 수집 기능 (v4, 기본)
+nsx-collector.conf    편집하는 파일 — 같은 파일을 .py 와 .sh 가 함께 읽는다
+nsx-collector.sh      같은 기능의 POSIX sh 예비본 (discover 는 없다)
 ```
+
+**왜 파이썬인가.** 장비에서 값을 찾아오는 기능(discover)은 NSX CLI 출력과
+`summarize-dvfilter` 를 파싱해야 한다. 셸로는 정확히 쓰기 어렵고, 두 장비에
+이미 파이썬이 있다(ESXi 8.0.3 = 3.11, NSX 4.2 Edge = 3.10). 표준
+라이브러리만 쓰므로 설치할 것은 없다. 파이썬은 CRLF 파일도 그대로 실행되므로
+현장에서 겪은 줄바꿈 사고에도 강하다. 파이썬을 쓰기 어려운 장비를 위해 셸
+예비본을 함께 둔다.
+
+**설정 파일 파싱 규칙**(두 구현이 같은 파일을 읽기 위한 것):
+따옴표로 감싼 값은 **닫는 따옴표에서 끝난다.** 그 뒤는 전부 주석이며, 주석
+안에 따옴표가 있어도 값에 섞이지 않는다.
+```
+PROTO=""      # "udp" / "tcp", or several: "udp tcp"    -> 값은 빈 문자열
+```
+(이 처리를 빼먹어 PROTO 가 주석 전체로 읽히던 버그를 랩에서 잡았다.)
+
+**값 목록과 이름 목록은 파서가 다르다.** IP·포트 같은 값은 공백·쉼표·괄호로
+나누지만, VM·NIC **이름**은 공백으로만 나누고 괄호를 지우지 않는다. 랩에
+`SupervisorControlPlaneVM_(2)` 같은 VM 이 있어서 필요했다. 이름에 공백이
+들어간 VM 은 공백 구분 목록에 담을 수 없으므로 discover 가 목록에서 빼고
+이유를 알려 준다.
 
 스크립트가 스스로 어느 장비인지 판단한다.
 
@@ -22,7 +44,7 @@ nsx-collector.conf    편집하는 것은 이것뿐
 | `/opt/vmware/nsx-edge` 존재 | NSX Edge |
 | 둘 다 아님 | 실행 거부 |
 
-수집기는 `sh nsx-collector.sh <동작>` 형태로 자기 자신을 다시 부르는 구조다.
+수집기는 `python3 nsx-collector.py <동작>` 형태로 자기 자신을 다시 부르는 구조다.
 나중에 "우리가 띄운 프로세스"를 찾을 때도 명령줄에 남은 이 동작 이름으로
 식별한다.
 
@@ -118,7 +140,7 @@ admin CLI 의 `start capture` 는 깔끔하게 멈출 수 없고 파일도 잃�
 쓰는 패턴은 전부 "이름"이 아니라 "무엇을 쓰고 있는가" 기준이다.
 
 ```
-nsx-collector.sh <동작>                     우리 수집기
+nsx-collector.py <동작>                     우리 수집기
 tcpdump   ... -w <OUT>/run-*/pcap/1*        Edge 캡처
 pktcap-uw ... -o <OUT>/run-*/pcap/2*        ESXi 캡처(옵션 방식)
 tcpdump-uw ... -w <OUT>/run-*/pcap/2*       ESXi 캡처(파이프 방식)
@@ -174,7 +196,8 @@ ESXi 는 거부 대신 파일 크기를 자동으로 줄인다. 실측: 24개 ×
   문자 처리는 `sed`/`awk` 로 한다.
 * **보안 설정이 켜진 ESXi 는 `./스크립트` 를 거부한다**(`Operation not
   permitted`, execInstalledOnly = VIB 로 설치된 파일만 직접 실행 허용).
-  `sh 스크립트` 는 영향이 없다. 이 툴킷의 모든 안내가 `sh` 로 시작하는 이유다.
+  인터프리터를 통해 실행하면(`python3 스크립트`, `sh 스크립트`) 영향이 없다.
+  이 툴킷의 모든 안내가 `python3` / `sh` 로 시작하는 이유다.
 * **Edge 캡처 파일의 일부는 802.1Q 태그가 붙어 있다**(주로 되돌아가는 방향,
   실측 930개 중 367개). 캡처 시에는 커널이 태그를 떼고 필터를 적용하므로
   누락이 없다. 하지만 **파일을 읽을 때** 조건을 걸면 태그 붙은 쪽이 조용히
@@ -253,3 +276,29 @@ ESXi 는 거부 대신 파일 크기를 자동으로 줄인다. 실측: 24개 ×
 담으면 남의 워크로드(다른 테넌트, vCenter, 로그 서버)까지 고객 SR 에 첨부되는
 번들에 들어간다. 그래서 둘 다 `WORKER_VMS` 로 잘라낸다(랩 기준 181줄 → 25줄).
 원본이 필요하면 `FULL_HOST=1` 로 켠다. 기본값은 언제나 꺼짐이다.
+
+
+---
+
+## 11. discover 가 읽는 것 (v4)
+
+전부 조회 명령이고, 마지막에 사용자가 y 를 눌러야 설정 파일을 쓴다.
+쓸 때는 주석을 그대로 두고 값만 바꾸며, 원본을 `nsx-collector.conf.bak` 으로
+남긴다.
+
+| 장비 | 실행하는 명령 | 채우는 키 |
+|---|---|---|
+| Edge | `get load-balancers` | `LB_UUID`, `T1_LB_SR_UUID` |
+| Edge | `get logical-router <SR> interfaces` | `LIF_LBT1_SVC`(service), `LIF_VPCT1_UPLINK`(uplink) |
+| Edge | `get load-balancer <LB> virtual-servers` | `VIP`, `SVC_PORT`, `PROTO`, `LB_POOL_UUIDS` |
+| Edge | `get load-balancer <LB> pool <POOL>` | `NODE_PORT`(멤버 포트) |
+| Edge | `get load-balancer <LB> pool <POOL> snat-pools` | `LB_SNAT_IP` |
+| Edge | `get logical-routers` | `T0_SR_UUID`, T1 목록 |
+| Edge | `get logical-router <SR> high-availability status` | 화면에 Active/Standby 표시 |
+| ESXi | `summarize-dvfilter` | `WORKER_VMS` 후보(DFW 필터가 있는 VM) |
+| ESXi | `net-stats -l` | 고른 VM 의 스위치 포트 표시 |
+| ESXi | `esxcli network nic list` | `UPLINK_NICS`(Link Up 만) |
+
+T0 SR UUID 는 **노드마다 다르다**(A/A 라 각 Edge 가 자기 SR 을 가진다).
+edge01 에서 본 값을 edge02 에 쓰면 맞지 않는다 — 그래서 discover 는 실행한
+장비에서 직접 읽는다.

@@ -36,7 +36,12 @@ The script checks itself for this and tells you how to fix it.
 
 ## 1. Fill in the config
 
-Only one thing per box is mandatory.
+**The quick way:** `python3 nsx-collector.py discover` reads the box, offers
+what it found (load balancers, virtual servers, T1s / VMs and uplinks), and
+writes your answers into the config - comments kept, original backed up as
+`nsx-collector.conf.bak`.
+
+By hand, only one thing per box is mandatory.
 
 ```
 NSX Edge   LIF_LBT1_SVC and/or LIF_VPCT1_UPLINK     the interface to capture on
@@ -77,10 +82,11 @@ INTERVAL=30         seconds between state samples
 ## 2. Check before you commit
 
 ```
-sh nsx-collector.sh selftest     # tools, root, filter syntax, disk, targets
-sh nsx-collector.sh check        # Edge: which node is Active / ESXi: VM map
-sh nsx-collector.sh rehearse     # one sample of everything except the capture
-sh nsx-collector.sh wipe         # clear the rehearsal
+python3 nsx-collector.py discover     # fill the config in from the box itself
+python3 nsx-collector.py selftest     # tools, root, filter syntax, disk, targets
+python3 nsx-collector.py check        # Edge: which node is Active / ESXi: VM map
+python3 nsx-collector.py rehearse     # one sample of everything except the capture
+python3 nsx-collector.py wipe         # clear the rehearsal
 ```
 
 **On an Edge, `check` is the one that matters.** A T1 service router is
@@ -115,9 +121,9 @@ On an Edge `/var/dump` is large (50 GB+ in the lab), so the default ring of
 ## 4. Collect
 
 ```
-sh nsx-collector.sh start        # everything, in the background
-sh nsx-collector.sh status       # what is running, how long is left
-sh nsx-collector.sh watch        # the same, refreshed
+python3 nsx-collector.py start        # everything, in the background
+python3 nsx-collector.py status       # what is running, how long is left
+python3 nsx-collector.py watch        # the same, refreshed
 ```
 
 Captures end by themselves after `CAP_SECS`, the pollers after `DURATION`.
@@ -132,8 +138,8 @@ after the capture.
 ## 5. Stop and check that nothing is left
 
 ```
-sh nsx-collector.sh stop --dry-run   # shows every decision, changes nothing
-sh nsx-collector.sh stop             # stop, keep the files
+python3 nsx-collector.py stop --dry-run   # shows every decision, changes nothing
+python3 nsx-collector.py stop             # stop, keep the files
 ```
 
 `stop` prints what it is signalling and ends with an AFTER block. It exits
@@ -167,7 +173,7 @@ every file name means.
 Then remove the data from the box when you no longer need it:
 
 ```
-sh nsx-collector.sh wipe
+python3 nsx-collector.py wipe
 ```
 
 ---
@@ -199,31 +205,31 @@ beginning was probably overwritten - raise `CAP_FILESIZE` or shorten
 ## Quick reference
 
 ```
-sh nsx-collector.sh                 menu
-sh nsx-collector.sh config          what the config says, and the filter it makes
-sh nsx-collector.sh selftest        everything that has to be right
-sh nsx-collector.sh check           Edge: Active node   ESXi: VM map
-sh nsx-collector.sh map             ESXi: VM <-> DFW filter <-> switch port
-sh nsx-collector.sh rehearse        one sample, no capture
-sh nsx-collector.sh start           start everything
-sh nsx-collector.sh status          progress
-sh nsx-collector.sh watch [secs]    progress, refreshed
-sh nsx-collector.sh stop            stop, keep files
-sh nsx-collector.sh wipe            stop and delete our files
-sh nsx-collector.sh stop --dry-run  show the decisions only
-sh nsx-collector.sh help            what it collects and why
+python3 nsx-collector.py                 menu
+python3 nsx-collector.py config          what the config says, and the filter it makes
+python3 nsx-collector.py selftest        everything that has to be right
+python3 nsx-collector.py check           Edge: Active node   ESXi: VM map
+python3 nsx-collector.py map             ESXi: VM <-> DFW filter <-> switch port
+python3 nsx-collector.py rehearse        one sample, no capture
+python3 nsx-collector.py start           start everything
+python3 nsx-collector.py status          progress
+python3 nsx-collector.py watch [secs]    progress, refreshed
+python3 nsx-collector.py stop            stop, keep files
+python3 nsx-collector.py wipe            stop and delete our files
+python3 nsx-collector.py stop --dry-run  show the decisions only
+python3 nsx-collector.py help            what it collects and why
 ```
 
 One collector on its own, if you prefer:
 
 ```
-sh nsx-collector.sh cap-lbt1 [secs]     Edge, LB T1 service interface
-sh nsx-collector.sh cap-vpct1 [secs]    Edge, VPC T1 uplink
-sh nsx-collector.sh cap-pre [secs]      ESXi, before the DFW rules
-sh nsx-collector.sh cap-post [secs]     ESXi, after the DFW rules
-sh nsx-collector.sh stats-once|stats-run
-sh nsx-collector.sh sess-once|sess-run  Edge
-sh nsx-collector.sh dfw-once|dfw-run    ESXi
+python3 nsx-collector.py cap-lbt1 [secs]     Edge, LB T1 service interface
+python3 nsx-collector.py cap-vpct1 [secs]    Edge, VPC T1 uplink
+python3 nsx-collector.py cap-pre [secs]      ESXi, before the DFW rules
+python3 nsx-collector.py cap-post [secs]     ESXi, after the DFW rules
+python3 nsx-collector.py stats-once|stats-run
+python3 nsx-collector.py sess-once|sess-run  Edge
+python3 nsx-collector.py dfw-once|dfw-run    ESXi
 ```
 
 The captures return to the prompt in a couple of seconds and keep running in
