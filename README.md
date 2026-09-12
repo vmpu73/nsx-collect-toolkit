@@ -12,7 +12,8 @@ nsx-collector.conf    the only thing you edit - or let "discover" fill it in
 
 A POSIX sh version of the same tool (`nsx-collector.sh`, same config file) is
 kept as a fallback for a box where python is not wanted. `discover` is python
-only. Korean step-by-step guide: **GUIDE.md**.
+only. Korean step-by-step guide: **GUIDE.md**; packet analysis recipes:
+**ANALYSIS.md**.
 
 Nothing is installed on the target. It uses what is already on an NSX Edge
 (sh, tcpdump, the admin CLI) and on ESXi (busybox sh, pktcap-uw, tcpdump-uw,
@@ -36,7 +37,7 @@ the interpreter is unaffected. ESXi 8.0.3 ships python 3.11, an NSX 4.2 Edge
 
 ```
 +======================================================================+
-|  NSX Collector 4.0   (python)                                        |
+|  NSX Collector 5.0   (python)                                        |
 |  ISCPSR-49099   esxi / esx01   2026-09-12 06:56:06                   |
 +======================================================================+
 |    SETUP                          COLLECT                            |
@@ -117,6 +118,27 @@ On ESXi the single fields are turned into `pktcap-uw` options, and
 pktcap-uw has no `or` - so every combination of protocol x port x address
 becomes its own capture and its own file. Two ports x two addresses x two
 VMs x pre/post is 16 files. That is why `FILTER` exists.
+
+## Finding one flow afterwards
+
+```
+python3 nsx-collector.py analyze --dst 10.1.1.10 --dport 1812 --proto udp
+```
+
+Every field is optional and the reply direction is matched too. It reads the
+pcap files itself - classic pcap from tcpdump and the pcapng that pktcap-uw
+writes - so 802.1Q tagged packets cannot hide from it, which they do when a
+filter is handed to tcpdump while reading a file.
+
+It reports, per capture point: how many packets of that flow are there, in
+which direction, the address pairs actually seen (this is where NAT shows
+up), and then what is happening - TCP handshake completed or never answered,
+retransmissions, who sent the RST, UDP request/response times (with a
+warning when an answer is slower than the 30 s a stateful firewall keeps the
+session), ICMP unreachable reasons, RADIUS message types. Finally it compares
+the same vNIC before and after the DFW, so "the firewall dropped it" and
+"it never arrived on this host" are told apart - and prints the tcpdump
+command to check it by hand.
 
 ## Where the results go
 
