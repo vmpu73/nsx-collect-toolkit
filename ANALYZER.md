@@ -13,8 +13,8 @@ python3 nsx-analyzer.py help        무엇을 알려 주는지
 쓸 때만 파일을 만든다).
 
 ```
-scp -r root@<장비>:/var/dump/nsx-collect/run-mb-edge02-20260912-073308 .
-python3 nsx-analyzer.py --run ./run-mb-edge02-20260912-073308
+scp -r root@<장비>:/var/dump/nsx-collect/run-<edge02>-20260912-073308 .
+python3 nsx-analyzer.py --run ./run-<edge02>-20260912-073308
 ```
 
 찾는 위치는 `--run` → `/var/dump/nsx-collect` → `/tmp/nsx-collect` → 현재
@@ -27,7 +27,7 @@ python3 nsx-analyzer.py --run ./run-mb-edge02-20260912-073308
 ```
 +======================================================================+
 |  NSX Analyzer 6.2                                                    |
-|  run: run-mb-edge02-20260912-073308                                  |
+|  run: run-<edge02>-20260912-073308                                  |
 +======================================================================+
 |    1  overview        what this run contains                         |
 |    2  flow            find a flow (5-tuple) and explain it           |
@@ -53,7 +53,7 @@ python3 nsx-analyzer.py --run ./run-mb-edge02-20260912-073308
 
 ```
 python3 nsx-analyzer.py flow --src 10.1.1.5 --dst 10.1.1.50 --dport 8080 --proto tcp
-python3 nsx-analyzer.py flow --dst 42.15.249.86 --dport 1813 --proto udp
+python3 nsx-analyzer.py flow --dst <NAT_IP> --dport 1813 --proto udp
 ```
 - 값은 전부 선택이고 **응답 방향도 함께** 찾는다.
 - 정확한 5튜플로 못 찾으면 `host X and port Y` 방식으로 한 번 더 찾아 알려 준다
@@ -82,14 +82,14 @@ python3 nsx-analyzer.py flow --dst 42.15.249.86 --dport 1813 --proto udp
 폴더들을 한 곳에 모아 놓고 이렇게 하면 전부 훑는다.
 
 ```
-python3 nsx-analyzer.py flow --all-runs --dst 172.16.204.10 --dport 80 --proto tcp --run <모아둔폴더>
+python3 nsx-analyzer.py flow --all-runs --dst <VIP> --dport 80 --proto tcp --run <모아둔폴더>
 ```
 
 실측 예(Edge 2대):
 ```
-2 run directory(ies): run-mb-edge01-..., run-mb-edge02-...
-  RUN run-mb-edge01-...   NOT FOUND here (0 packet(s) in the file)
-  RUN run-mb-edge02-...   292 packet(s) of this flow out of 965 in the file
+2 run directory(ies): run-<edge01>-..., run-<edge02>-...
+  RUN run-<edge01>-...   NOT FOUND here (0 packet(s) in the file)
+  RUN run-<edge02>-...   292 packet(s) of this flow out of 965 in the file
 ```
 
 ## 3. state — 카운터가 그 시간 동안 어떻게 움직였나
@@ -106,7 +106,7 @@ python3 nsx-analyzer.py flow --all-runs --dst 172.16.204.10 --dport 80 --proto t
 - 인터페이스별 방화벽 연결 수를 샘플마다 (`9d7af199 073311=45, 073355=33`)
 - 연결 테이블 분석: 프로토콜·상태 분포, **SYN 상태(half-open) 경고**,
   그리고 **NAT 매핑**을 그대로 보여 준다
-  `172.20.10.254:61496 -> 172.16.204.10:80 (as 172.20.31.110:80)`
+  `10.0.0.1:61496 -> <VIP>:80 (as 10.0.0.1:80)`
 - 로드밸런서: 샘플마다 상태와 **가상 서버·풀 업 개수**(다운이면 경고),
   L4/L7 현재·최대·누적 세션과 초당 세션 수
 - 풀 멤버: 멤버별 IP·포트·상태와 헬스 모니터 상태
@@ -122,7 +122,7 @@ python3 nsx-analyzer.py flow --all-runs --dst 172.16.204.10 --dport 80 --proto t
 
 5튜플을 함께 주면 연결 테이블과 DFW 세션 표에서 그 플로우만 찾아 준다.
 ```
-python3 nsx-analyzer.py session --dst 172.16.201.11 --dport 80 --proto tcp
+python3 nsx-analyzer.py session --dst 10.0.0.1 --dport 80 --proto tcp
 ```
 
 ## 5. report — 한꺼번에 파일로

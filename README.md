@@ -42,7 +42,7 @@ the interpreter is unaffected. ESXi 8.0.3 ships python 3.11, an NSX 4.2 Edge
 ```
 +======================================================================+
 |  NSX Collector 5.0   (python)                                        |
-|  ISCPSR-49099   esxi / esx01   2026-09-12 06:56:06                   |
+|  <CASE_ID>   esxi / esx01   2026-09-12 06:56:06                   |
 +======================================================================+
 |    SETUP                          COLLECT                            |
 |      1  config                       5  start all                    |
@@ -154,7 +154,7 @@ command to check it by hand.
 counters with their change, and any error/drop counter that is *rising*.
 
 **session** reads the tables: the Edge connection table with the NAT mapping
-it holds (`172.16.204.2:54982 -> 172.16.201.12:80 (172.16.204.10:80)`),
+it holds (`<LB_SNAT_IP>:54982 -> <BACKEND_IP>:80 (<VIP>:80)`),
 half-open sessions, connection counts per interface over the window, load
 balancer state with virtual server and pool members up or down, and on ESXi
 the DFW pass/drop counters in packets with the drop reasons behind them.

@@ -38,14 +38,14 @@ tcpdump -nr edge.pcap0 "($E) or (vlan and ($E))"
 는 pcap 을 직접 해석하므로 이 함정이 없다.
 
 ### (2) `host X and port 80` 은 5튜플이 아니다
-`tcpdump 'host 172.16.204.2 and tcp port 80'` 은 "주소가 어느 쪽에든 있고,
+`tcpdump 'host <LB_SNAT_IP> and tcp port 80'` 은 "주소가 어느 쪽에든 있고,
 포트도 어느 쪽에든 있으면" 잡는다. LB SNAT 주소는 임의 포트로 나가므로
-`172.16.204.2:80` 같은 조합은 실제로 존재하지 않는다. 방향을 정확히 지정하려면
+`<LB_SNAT_IP>:80` 같은 조합은 실제로 존재하지 않는다. 방향을 정확히 지정하려면
 `src`/`dst` 를 쓴다.
 
 ```bash
-tcpdump -nr f.pcap0 'src host 172.16.204.2 and dst port 80'   # LB -> 백엔드
-tcpdump -nr f.pcap0 'dst host 172.16.204.10 and dst port 80'  # 클라이언트 -> VIP
+tcpdump -nr f.pcap0 'src host <LB_SNAT_IP> and dst port 80'   # LB -> 백엔드
+tcpdump -nr f.pcap0 'dst host <VIP> and dst port 80'  # 클라이언트 -> VIP
 ```
 
 ---
@@ -125,13 +125,13 @@ RADIUS(1812 인증 / 1813 과금), DNS, SNMP 처럼 요청-응답 구조에 쓴�
 
 ```bash
 tcpdump -nr f.pcap0 'udp port 1812' | wc -l
-tcpdump -nr f.pcap0 'src host 10.81.1.112 and dst port 1813' | wc -l   # 요청
-tcpdump -nr f.pcap0 'src port 1813 and dst host 10.81.1.112' | wc -l   # 응답
+tcpdump -nr f.pcap0 'src host <CLIENT_IP> and dst port 1813' | wc -l   # 요청
+tcpdump -nr f.pcap0 'src port 1813 and dst host <CLIENT_IP>' | wc -l   # 응답
 ```
 
 **응답 지연 시간 재기** (요청·응답 시각을 나란히 찍어 눈으로 확인):
 ```bash
-tcpdump -nr f.pcap0 -tttt 'host 10.81.1.112 and port 1813' | head -20
+tcpdump -nr f.pcap0 -tttt 'host <CLIENT_IP> and port 1813' | head -20
 ```
 응답이 30초를 넘기면 **스테이트풀 방화벽의 UDP 세션이 이미 만료**되어 응답이
 클라이언트에 도달하지 못한다. NSX Edge GFW 의 UDP 타이머는 기본 30초다.
@@ -167,14 +167,14 @@ tcpdump -nr f.pcap0 'icmp[icmptype] == icmp-unreach and icmp[icmpcode] == 4'   #
 
 ```bash
 # Edge VPC T1 업링크 (NAT 전) — 공인/NAT 주소가 보인다
-tcpdump -nr 11-edge-vpct1uplink-*.pcap0 'host 172.20.31.112' | head
+tcpdump -nr 11-edge-vpct1uplink-*.pcap0 'host <NAT_IP>' | head
 
 # Edge LB T1 서비스 인터페이스 (NAT 후) — VIP 와 LB SNAT 가 보인다
-tcpdump -nr 10-edge-lbt1svc-*.pcap0 'host 172.16.204.12' | head
-tcpdump -nr 10-edge-lbt1svc-*.pcap0 'src host 172.16.204.2' | head
+tcpdump -nr 10-edge-lbt1svc-*.pcap0 'host <VIP>' | head
+tcpdump -nr 10-edge-lbt1svc-*.pcap0 'src host <LB_SNAT_IP>' | head
 
 # ESXi 백엔드 vNIC — 출발지가 LB SNAT 로 바뀐 것이 보인다
-tcpdump-uw -nr 20-dfw-pre-web01-eth0.pcap0 'dst port 80' | head
+tcpdump-uw -nr 20-dfw-pre-<VM1>-eth0.pcap0 'dst port 80' | head
 ```
 
 한 지점에는 있고 다음 지점에 없으면 그 사이에서 사라진 것이다. 지점 이름
@@ -188,8 +188,8 @@ tcpdump-uw -nr 20-dfw-pre-web01-eth0.pcap0 'dst port 80' | head
 
 ```bash
 E='host 10.1.1.50 and tcp port 8080'
-echo "pre  : $(tcpdump-uw -nr 20-dfw-pre-web01-eth0.pcap0  "$E" | wc -l)"
-echo "post : $(tcpdump-uw -nr 21-dfw-post-web01-eth0.pcap0 "$E" | wc -l)"
+echo "pre  : $(tcpdump-uw -nr 20-dfw-pre-<VM1>-eth0.pcap0  "$E" | wc -l)"
+echo "post : $(tcpdump-uw -nr 21-dfw-post-<VM1>-eth0.pcap0 "$E" | wc -l)"
 ```
 
 | pre | post | 판정 |
@@ -201,9 +201,9 @@ echo "post : $(tcpdump-uw -nr 21-dfw-post-web01-eth0.pcap0 "$E" | wc -l)"
 
 막혔다면 규칙과 카운터를 같이 본다(수집기가 함께 저장한다).
 ```
-session/62-dfw-rules-web01-eth0.txt       적용된 규칙
-session/63-dfw-passdrop-web01-eth0.txt    v4 pass / v4 drop 카운터
-session/61-dfw-flows-web01-eth0-*.txt     세션 표
+session/62-dfw-rules-<VM1>-eth0.txt       적용된 규칙
+session/63-dfw-passdrop-<VM1>-eth0.txt    v4 pass / v4 drop 카운터
+session/61-dfw-flows-<VM1>-eth0-*.txt     세션 표
 ```
 **드롭 카운터는 "늘어나는지"로 판단한다.** 값이 있어도 그대로면 예전 것이다.
 
@@ -236,8 +236,8 @@ PC 로 가져왔다면 Wireshark 의 Statistics → Conversations / IO Graph 가
 없고, pktcap-uw 의 pcapng 도 읽는다.
 
 ```bash
-python3 nsx-collector.py analyze --dst 172.16.204.10 --dport 80 --proto tcp
-python3 nsx-collector.py analyze --src 10.81.1.112 --dport 1813 --proto udp
+python3 nsx-collector.py analyze --dst <VIP> --dport 80 --proto tcp
+python3 nsx-collector.py analyze --src <CLIENT_IP> --dport 1813 --proto udp
 python3 nsx-collector.py analyze --dst 10.1.1.50 --dport 8080 --proto tcp --run /tmp/nsx-collect/run-...
 ```
 - 값은 전부 선택이고 **응답 방향도 함께** 찾는다.

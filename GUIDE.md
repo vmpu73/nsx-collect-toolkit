@@ -53,7 +53,7 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 ```
 +======================================================================+
 |  NSX Collector 6.2   (python)                                        |
-|  ISCPSR-49099   edge / mb-edge02   2026-09-12 06:54:44               |
+|  <CASE_ID>   edge / <edge02>   2026-09-12 06:54:44               |
 +======================================================================+
 |    SETUP                          COLLECT                            |
 |      1  config                       5  start all                    |
@@ -135,7 +135,7 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 
 마지막에 이렇게 보여 주고 `y` 를 눌러야 쓴다.
 ```
-  * WORKER_VMS         web01 web02
+  * WORKER_VMS         <VM1> <VM2>
   * UPLINK_NICS        vmnic0 vmnic1
    * = changed. Nothing else in the file is touched, comments stay.
    write this into nsx-collector.conf? [y/N]
@@ -174,7 +174,7 @@ FILTER="net 10.1.1.0/28 and udp"
 
 ```
 python3 nsx-analyzer.py                 메뉴 (overview / flow / state / session / report)
-python3 nsx-analyzer.py flow --dst 172.16.204.10 --dport 80 --proto tcp
+python3 nsx-analyzer.py flow --dst <VIP> --dport 80 --proto tcp
 python3 nsx-analyzer.py report 결과.txt
 ```
 

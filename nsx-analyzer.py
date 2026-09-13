@@ -719,8 +719,8 @@ def action_analyse(want, run=None, files=None, limit=12):
         if info["fwd"] and not info["rev"]:
             print("   %s: requests only, no answer." % label)
 
-    # pre and post are only comparable for the SAME vNIC: a flow to web01 is
-    # not supposed to be in web02's capture, and calling that a DFW drop
+    # pre and post are only comparable for the SAME vNIC: a flow to <VM1> is
+    # not supposed to be in <VM2>'s capture, and calling that a DFW drop
     # would be wrong (it was, until the lab showed it).
     counts = {}
     for label, _paths, _total, hits in results:

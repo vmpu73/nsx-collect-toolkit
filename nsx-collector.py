@@ -1136,7 +1136,7 @@ def edge_sessions_once():
             fh.write(cli("get firewall %s connection count" % uuid))
         # The table shows the NAT mapping in brackets, which is exactly what
         # you want when a load balancer is in the path:
-        #   0x..: 172.16.204.2:54982 -> 172.16.201.12:80 (172.16.204.10:80)
+        #   0x..: <LB_SNAT_IP>:54982 -> <BACKEND_IP>:80 (<VIP>:80)
         with open(os.path.join(d, "51-edge-fw-conn-table-%s-%s.txt" % (short, ts)), "w") as fh:
             fh.write(cli("get firewall %s connection" % uuid))
     lbs = values(cget("LB_UUID"))
@@ -1215,7 +1215,7 @@ def esxi_vms():
 
 
 def esxi_vnic_for(vm):
-    """WORKER_VNIC is a list and may be mixed: "eth0 web02:eth2,eth3"."""
+    """WORKER_VNIC is a list and may be mixed: "eth0 <VM2>:eth2,eth3"."""
     default, hit = [], []
     for tok in names(cget("WORKER_VNIC")):
         tok = tok.replace(".", ":", 1) if ("." in tok and ":" not in tok) else tok
