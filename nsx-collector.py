@@ -53,6 +53,16 @@ def thin():
     print("  " + "-" * (UIW - 2))
 
 
+def bar(done, total, width=20):
+    """[########------------]  40%   - fixed width so columns line up."""
+    if not total or total <= 0:
+        return "[" + "-" * width + "]     "
+    done = max(0, min(done, total))
+    filled = done * width // total
+    return "[%s%s] %3d%%" % ("#" * filled, "-" * (width - filled),
+                             done * 100 // total)
+
+
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
@@ -348,7 +358,9 @@ def filter_for(point):
     if filter_set():
         return bpf_fix(cget("FILTER"))
     hosts, ports, proto = cget("HOSTS"), cget("PORTS"), cget("PROTO")
-    if point == "vpct1":
+    if point in ("vpct1", "t0"):
+        # Both sit BEFORE the DNAT, so the VIP never appears there - the
+        # public / pre-NAT address is what makes these captures useful.
         h = bpf_hosts(cget("VIP"), cget("NAT_IP"), cget("CLIENT_IP"), hosts)
         s = bpf_svc(proto, cget("SVC_PORT"), ports)
         if h and s:
@@ -520,6 +532,8 @@ def run_info(path):
         "FILE NAMES",
         "  pcap/10-edge-lbt1svc-*      Edge capture, LB T1 service interface",
         "  pcap/11-edge-vpct1uplink-*  Edge capture, VPC T1 uplink",
+        "  pcap/12-edge-t0uplink-*     Edge capture, T0 uplink(s). A/A: run on",
+        "                              every Edge and merge with mergecap",
         "  pcap/20-dfw-pre-*           ESXi capture BEFORE the DFW rules",
         "  pcap/21-dfw-post-*          ESXi capture AFTER the DFW rules",
         "    a trailing -u1812 / -t80 / -icmp / -ip<addr> is the pktcap-uw",
@@ -543,9 +557,12 @@ def run_info(path):
 
 
 def mark_start(name, secs):
+    """Record "<start> <end>" - the end alone cannot give a percentage, and
+    the percentage is what makes the status screen readable at a glance."""
     os.makedirs(OUT, exist_ok=True)
+    now = int(time.time())
     with open(os.path.join(OUT, ".nsxc-end-" + name), "w") as fh:
-        fh.write(str(int(time.time()) + secs))
+        fh.write("%d %d" % (now, now + secs))
 
 
 def mark_done(name):
@@ -753,6 +770,11 @@ def edge_ha_detail(sr_uuid):
     """(state on this node, peer node uuid). The top "state" line is this
     node; the "Peer Routers" block at the bottom is the other one."""
     out = cli("get logical-router %s high-availability status" % sr_uuid)
+    # The CLI refuses a UUID that is not a service router on THIS node with
+    # "% Invalid value for argument <uuid>". Reporting that as "?" hid a real
+    # misconfiguration - say what happened instead.
+    if "Invalid value" in out or "% Invalid" in out:
+        return "not-here", ""
     state, peer = "?", ""
     for line in out.splitlines():
         m = re.match(r"\s*state\s*:\s*(\S+)", line)
@@ -771,6 +793,10 @@ CAPTURE_POINTS = [
     ("LB T1 service",  "LIF_LBT1_SVC",     "T1_LB_SR_UUID",  "cap-lbt1"),
     ("VPC T1 uplink",  "LIF_VPCT1_UPLINK", "T1_VPC_SR_UUID", "cap-vpct1"),
 ]
+
+# The T0 is not in that table: it needs no "right Edge?" verdict. In A/A every
+# node is active, so the answer is always "here too" - what matters instead is
+# that the same capture is run on every Edge and the files merged.
 
 
 def edge_point_states():
@@ -887,6 +913,59 @@ def edge_pool(lb_uuid, pool_uuid):
     return {"members": members, "snat": snat}
 
 
+def edge_t0_srs():
+    """T0 service routers ON THIS NODE.
+
+    In A/A the SR UUID is DIFFERENT on every Edge - node 1 may call it
+    30b07c21 and node 2 af5f0376, for the same logical T0. So a UUID written
+    into the config can only ever be right on one node, and the value has to
+    be found here, at run time. (A/S T1s keep one UUID across the cluster,
+    which is why those are still named in the config.)
+    Verified on NSX 4.2.4.
+    """
+    want = cget("T0_NAME").strip()
+    out = []
+    for uuid, name, kind in edge_routers():
+        if kind != "SERVICE_ROUTER_TIER0":
+            continue
+        if want and want.lower() not in name.lower():
+            continue
+        out.append((uuid, name))
+    return out
+
+
+def edge_t0_uplinks():
+    """[(lif_uuid, label)] - every uplink of this node's T0.
+
+    A T0 normally has more than one uplink for redundancy, and traffic may
+    leave by any of them, so capturing only the first one shows half the
+    picture."""
+    out = []
+    for uuid, name in edge_t0_srs():
+        for iface in edge_interfaces(uuid):
+            if iface["type"] == "uplink":
+                out.append((iface["uuid"], "%s %s" % (name, iface["ip"] or "")))
+    return out
+
+
+def edge_span_free(count):
+    """`count` span session ids that are not in use.
+
+    Sessions used to be pinned in the config (CAP_SESSION_LBT1=1 ...). That
+    breaks as soon as there are more capture points than someone remembered
+    to number - two captures on the same id overwrite each other in silence.
+    An id is free when "get capture session <n>" reports no PORTS."""
+    free = []
+    for sid in range(0, 8):
+        if edge_span_owner(str(sid)) == "empty":
+            free.append(str(sid))
+            if len(free) == count:
+                return free
+    die("not enough free span sessions (need %d, found %d).\n"
+        "Something else is capturing on this Edge. Check:\n"
+        "  su admin -c \"get capture sessions\"" % (count, len(free)))
+
+
 def edge_span_open(session_id, lif):
     cli("set capture session %s interface %s direction dual" % (session_id, lif))
     for _ in range(10):
@@ -910,10 +989,26 @@ def edge_span_owner(session_id):
     ports = m.group(1) if m else ""
     if not ports or "[]" in ports:
         return "empty"
-    for lif in (cget("LIF_LBT1_SVC"), cget("LIF_VPCT1_UPLINK")):
+    ours = [cget("LIF_LBT1_SVC"), cget("LIF_VPCT1_UPLINK")]
+    ours += [u for u, _lbl in _t0_uplinks_cached()]
+    for lif in ours:
         if lif and lif in ports:
             return "ours"
     return "other"
+
+
+_T0_CACHE = []
+
+
+def _t0_uplinks_cached():
+    """edge_t0_uplinks() costs two CLI calls; the span scan asks eight times."""
+    global _T0_CACHE
+    if not _T0_CACHE:
+        try:
+            _T0_CACHE = edge_t0_uplinks() or [("", "")]
+        except Exception:
+            _T0_CACHE = [("", "")]
+    return [x for x in _T0_CACHE if x[0]]
 
 
 def edge_capture(label, prefix, lif, expr, secs, session_id, sr_uuid=""):
@@ -1078,11 +1173,24 @@ def edge_check():
     if not points:
         print("   No capture interface in the config - nothing to check.")
         print("   Fill it in with:  python3 nsx-collector.py discover")
-    for label, key in (("T0", "T0_SR_UUID"),):
-        uuid = cget(key)
-        if uuid:
-            state, _peer = edge_ha_detail(uuid)
-            print("   %-15s %-38s %s  (T0 is usually Active/Active)" % (label, uuid, state))
+    for uuid, name in edge_t0_srs():
+        state, _peer = edge_ha_detail(uuid)
+        ups = [i for i in edge_interfaces(uuid) if i["type"] == "uplink"]
+        note = "A/A - every node is active, capture on all of them" \
+            if state == "Active" else state
+        print("   %-15s %-38s %-8s %s" % ("T0 " + name[:11], uuid, state, note))
+        for iface in ups:
+            print("   %-15s %-38s %s" % ("  uplink", iface["uuid"], iface["ip"]))
+        if not ups:
+            print("   %-15s %s" % ("  uplink", "none - nothing to capture on"))
+    stale = cget("T0_SR_UUID")
+    if stale:
+        st, _p = edge_ha_detail(stale)
+        if st == "not-here":
+            print("   T0_SR_UUID      %-38s NOT on this node" % stale)
+            print("                   In A/A the T0 SR UUID differs per Edge, so a")
+            print("                   fixed value cannot be right everywhere.")
+            print("                   Empty T0_SR_UUID - this node's T0 is found above.")
     edge_split_note(points)
     print()
     print("   A capture on a STANDBY Edge returns zero packets.")
@@ -1451,32 +1559,86 @@ def esxi_check():
 # ===========================================================================
 #  DISCOVER - fill the config in from the box itself
 # ===========================================================================
+PAGE = 15          # rows per screen
+LIST_MAX = 40      # above this, listing everything is not useful - search first
+
+
 def pick(prompt, rows, allow_multi=False, allow_skip=True):
-    """rows: [(value, label)] - returns a list of chosen values."""
+    """Choose from rows: [(value, label)].
+
+    A production Edge can hold hundreds of load balancers and T1s. Printing
+    them all scrolls the screen past the point of use, so:
+      - above LIST_MAX rows nothing is printed until a search narrows it
+      - what is printed comes a page at a time
+      - "/text" searches the labels at any point
+    The engineer almost always knows a VIP address or a name already, which
+    makes searching faster than reading a list anyway.
+    """
     if not rows:
         print("   nothing found")
         return []
-    for i, (_val, label) in enumerate(rows, 1):
-        print("   %2d) %s" % (i, label))
-    if allow_skip:
-        print("    s) skip")
+
+    view = list(rows)
+    page = 0
+    quiet = len(view) > LIST_MAX          # too many: ask for a search first
+
     while True:
-        raw = ask("   %s " % prompt).strip().lower()
-        if raw in ("s", "") and allow_skip:
+        if quiet:
+            print()
+            print("   %d entries - too many to list." % len(view))
+            print("   Type /text to search (VIP, name, UUID), or /  to list anyway.")
+        else:
+            total = len(view)
+            pages = max(1, (total + PAGE - 1) // PAGE)
+            page = max(0, min(page, pages - 1))
+            start = page * PAGE
+            for i, (_val, label) in enumerate(view[start:start + PAGE], start + 1):
+                print("   %3d) %s" % (i, label))
+            if pages > 1:
+                print("        showing %d-%d of %d      n) next   p) prev"
+                      % (start + 1, min(start + PAGE, total), total))
+            if allow_skip:
+                print("          s) skip        /text) search")
+
+        print()
+        raw = ask("   %s > " % prompt).strip()
+        low = raw.lower()
+
+        if low in ("s", "") and allow_skip:
             return []
+        if low == "n":
+            page += 1
+            continue
+        if low == "p":
+            page -= 1
+            continue
+        if raw.startswith("/"):
+            term = raw[1:].strip().lower()
+            if not term:
+                view, quiet, page = list(rows), False, 0
+                continue
+            view = [r for r in rows if term in r[1].lower()]
+            quiet = False
+            page = 0
+            if not view:
+                print("   nothing matches '%s'" % term)
+                view = list(rows)
+                quiet = len(view) > LIST_MAX
+            continue
+
         nums = [n for n in re.split(r"[\s,]+", raw) if n]
         try:
             idx = [int(n) for n in nums]
         except ValueError:
-            print("   number please")
+            print("   a number, or /text to search")
             continue
-        if any(n < 1 or n > len(rows) for n in idx):
-            print("   out of range")
+        if any(n < 1 or n > len(view) for n in idx):
+            print("   out of range (1-%d)" % len(view))
             continue
         if not allow_multi and len(idx) > 1:
             print("   one only")
             continue
-        return [rows[n - 1][0] for n in idx]
+        return [view[n - 1][0] for n in idx]
 
 
 def discover_edge():
@@ -1493,13 +1655,23 @@ def discover_edge():
 
     lbs = edge_load_balancers()
     if lbs:
-        print("   Load balancers:")
+        print("   Load balancers: %d" % len(lbs))
+        # Showing the VIPs next to each name costs one CLI call PER load
+        # balancer, and a call takes seconds on a real Edge. That is fine for
+        # a handful and unusable for hundreds, so the VIPs are only fetched
+        # while the list is small enough to be worth reading.
         rows = []
-        for lb in lbs:
-            vss = edge_virtual_servers(lb["uuid"])
-            vips = ", ".join("%s:%s/%s" % (v["ip"], v["port"], v["proto"]) for v in vss[:3] if v["ip"])
-            rows.append((lb, "%-34s %s" % (lb["name"][:34], vips or "(no virtual server)")))
-        chosen = pick("which load balancer? [number/s]", rows)
+        if len(lbs) <= LIST_MAX:
+            for lb in lbs:
+                vss = edge_virtual_servers(lb["uuid"])
+                vips = ", ".join("%s:%s/%s" % (v["ip"], v["port"], v["proto"])
+                                 for v in vss[:3] if v["ip"])
+                rows.append((lb, "%-34s %s" % (lb["name"][:34], vips or "(no virtual server)")))
+        else:
+            print("   (too many to look up every VIP - search by name or UUID)")
+            for lb in lbs:
+                rows.append((lb, "%-34s %s" % (lb["name"][:34], lb["uuid"])))
+        chosen = pick("which load balancer?", rows)
         if chosen:
             lb = chosen[0]
             updates["LB_UUID"] = lb["uuid"]
@@ -1517,7 +1689,7 @@ def discover_edge():
                     for v in vss if v["ip"]]
             print()
             print("   Virtual servers of that load balancer:")
-            picked = pick("which virtual server(s)? [number/s]", rows, allow_multi=True)
+            picked = pick("which virtual server(s)? (several allowed)", rows, allow_multi=True)
             if picked:
                 updates["VIP"] = " ".join(v["ip"] for v in picked)
                 updates["SVC_PORT"] = " ".join(sorted(set(v["port"] for v in picked)))
@@ -1547,7 +1719,7 @@ def discover_edge():
             if uuid == updates.get("T1_LB_SR_UUID"):
                 continue
             rows.append(((uuid, name), "%-34s %s" % (name[:34], uuid)))
-        chosen = pick("which T1? [number]", rows)
+        chosen = pick("which T1?", rows)
         if chosen:
             uuid, _name = chosen[0]
             updates["T1_VPC_SR_UUID"] = uuid
@@ -1556,9 +1728,19 @@ def discover_edge():
                     updates["LIF_VPCT1_UPLINK"] = iface["uuid"]
                     print("   -> VPC T1 uplink interface %s (%s)" % (iface["uuid"], iface["ip"]))
                     break
-    if t0:
-        updates["T0_SR_UUID"] = t0[0][0]
-        print("   -> T0 service router %s" % t0[0][0])
+    # T0_SR_UUID is deliberately NOT written: in A/A the UUID differs per
+    # Edge, so a value in a shared config is wrong on every other node. The
+    # tool finds this node's T0 at run time. Only the NAME is worth keeping,
+    # and only when there is more than one T0 here.
+    if len(t0) > 1:
+        rows = [((u, n), "%-34s %s" % (n[:34], u)) for u, n, _k in t0]
+        print()
+        print("   This Edge hosts %d T0 gateways. Which one?" % len(t0))
+        got = pick("which T0?", rows)
+        if got:
+            updates["T0_NAME"] = got[0][1]
+    elif t0:
+        print("   -> T0 on this node: %s  (found automatically, not stored)" % t0[0][1])
     # The VPC T1 uplink carries the traffic BEFORE NAT, so the VIP never shows
     # up there. The Edge CLI cannot list NAT rules (checked on NSX 4.2.4), so
     # the one address that makes that capture useful has to be asked for.
@@ -1823,6 +2005,10 @@ def action_start():
             start_one("cap-vpct1", "vpct1", run)
         else:
             print("   VPC T1 capture NOT started: LIF_VPCT1_UPLINK is empty (required for it)")
+        # T0 is opt-in: with ECMP it is a per-cluster job, and on a busy
+        # uplink it catches far more than the service being chased.
+        if values(cget("CAPTURE_T0")):
+            start_one("cap-t0", "t0", run)
         if not (cget("LIF_LBT1_SVC") or cget("LIF_VPCT1_UPLINK")):
             print()
             print("   *** NO PACKET CAPTURE WILL RUN - both LIF_* are empty. ***")
@@ -1850,6 +2036,22 @@ def action_start():
     action_status()
 
 
+# Marker names are internal; these are what a person wants to read.
+STATUS_LABELS = {
+    "cap-lbt1-svc":     "LB T1 capture",
+    "cap-vpct1-uplink": "VPC T1 capture",
+    "cap-t0-uplink1":   "T0 capture up1",
+    "cap-t0-uplink2":   "T0 capture up2",
+    "cap-t0-uplink3":   "T0 capture up3",
+    "cap-t0-uplink4":   "T0 capture up4",
+    "cap-pre":          "DFW pre capture",
+    "cap-post":         "DFW post capture",
+    "stats":            "state counters",
+    "sess":             "session tables",
+    "dfw":              "DFW flows",
+}
+
+
 def action_status():
     band("STATUS   %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
     now = int(time.time())
@@ -1859,15 +2061,21 @@ def action_status():
                 continue
             with open(os.path.join(OUT, name)) as fh:
                 val = fh.read().strip()
-            label = name[len(".nsxc-end-"):]
+            key = name[len(".nsxc-end-"):]
+            label = STATUS_LABELS.get(key, key)
             if val == "done":
-                print("   %-12s finished" % label)
-            else:
-                try:
-                    left = int(val) - now
-                except ValueError:
-                    continue
-                print("   %-12s %dm %02ds left" % (label, max(0, left) // 60, max(0, left) % 60))
+                print("   %-16s %s   %-9s" % (label, bar(1, 1), "finished"))
+                continue
+            f = val.split()
+            try:
+                # new format "<start> <end>"; older runs wrote the end only
+                start, end = (int(f[0]), int(f[1])) if len(f) == 2 else (0, int(f[0]))
+            except (ValueError, IndexError):
+                continue
+            left = max(0, end - now)
+            total = end - start if start else 0
+            print("   %-16s %s   %-9s %dm%02ds left"
+                  % (label, bar(total - left, total), "running", left // 60, left % 60))
     print("   %-12s %d process(es) running" % ("captures", len(capture_pids())))
     print("   %-12s %d running" % ("pollers", len(poller_pids())))
     print("   %-12s %s MB" % ("free", free_mb(OUT)))
@@ -1968,7 +2176,7 @@ def action_stop(mode="keep", dry=False):
 
     if IS_EDGE:
         print()
-        for session_id in (cget("CAP_SESSION_LBT1") or "1", cget("CAP_SESSION_VPCT1") or "0"):
+        for session_id in [str(n) for n in range(0, 8)]:
             owner = edge_span_owner(session_id)
             if owner == "ours":
                 if dry:
@@ -2098,6 +2306,8 @@ EDGE_HELP = """
    ONE COLLECTOR ON ITS OWN (same as the menu, no menu)
      python3 nsx-collector.py cap-lbt1 [secs]     LB T1 service interface
      python3 nsx-collector.py cap-vpct1 [secs]    VPC T1 uplink
+     python3 nsx-collector.py cap-t0 [secs]       T0 uplink(s) - this node's T0,
+                                                  every uplink, span ids auto
      python3 nsx-collector.py stats-once | stats-run
      python3 nsx-collector.py sess-once  | sess-run
 """
@@ -2182,8 +2392,9 @@ def menu():
         row("    ONE AT A TIME                  FINISH")
         row("      c  capture LB T1 service       7  stop        keep files")
         row("      u  capture VPC T1 uplink       8  stop + delete files")
-        row("      t  state sample once           d  dry run (show only)")
-        row("      e  session sample once         9  help    q  quit")
+        row("      o  capture T0 uplink(s)        d  dry run (show only)")
+        row("      t  state sample once           9  help    q  quit")
+        row("      e  session sample once       ")
 
     else:
         row("    SETUP                          COLLECT")
@@ -2206,6 +2417,7 @@ def run_menu():
     single = {
         "c": ("cap-lbt1", "cap-pre"),
         "u": ("cap-vpct1", "cap-post"),
+        "o": ("cap-t0", None),
         "t": ("stats-once", "stats-once"),
         "e": ("sess-once", "dfw-once"),
     }
@@ -2335,7 +2547,51 @@ def dispatch(action, args):
             filter_problem(expr, msg)
             sys.exit(2)
         edge_capture("lbt1-svc", "10-edge-lbt1svc", cget("LIF_LBT1_SVC"), expr, secs,
-                     cget("CAP_SESSION_LBT1") or "1", cget("T1_LB_SR_UUID"))
+                     edge_span_free(1)[0], cget("T1_LB_SR_UUID"))
+    elif action == "cap-t0":
+        if not IS_EDGE:
+            die("cap-t0 is Edge only")
+        ups = names(cget("LIF_T0_UPLINK")) or [u for u, _l in edge_t0_uplinks()]
+        if not ups:
+            die("no T0 uplink found on this node.\n"
+                "  This Edge may host no T0, or T0_NAME does not match one.\n"
+                "  Look: su admin -c \"get logical-routers\"")
+        mkout()
+        expr = filter_for("t0")
+        ok, msg = filter_check(expr)
+        if not ok:
+            filter_problem(expr, msg)
+            sys.exit(2)
+        # One uplink was asked for -> capture it here. Several -> fan out, so
+        # the window is the same on all of them. Capturing them one after the
+        # other would mean uplink 2 sees a different 30 seconds than uplink 1.
+        only = os.environ.get("NSXC_T0_LIF")
+        if only:
+            idx = int(os.environ.get("NSXC_T0_IDX", "1"))
+            edge_capture("t0-uplink%d" % idx, "12-edge-t0uplink%d" % idx,
+                         only, expr, secs, edge_span_free(1)[0])
+        elif len(ups) == 1:
+            edge_capture("t0-uplink1", "12-edge-t0uplink1", ups[0], expr, secs,
+                         edge_span_free(1)[0])
+        else:
+            log("T0 uplink capture - %d uplink(s), in parallel" % len(ups))
+            log("  A/A: ECMP spreads traffic over every Edge AND over the uplinks.")
+            log("  Run this on every Edge that hosts the T0, then merge:")
+            log("    mergecap -w all.pcap 12-edge-t0uplink*.pcap*")
+            run = run_dir()
+            run_info(run)
+            for i, lif in enumerate(ups, 1):
+                logfile = os.path.join(LOGDIR, "nsxc-t0u%d.log" % i)
+                print("   $ uplink %d %s -> %s" % (i, lif, logfile))
+                env = dict(os.environ, NSXC_RUN=run,
+                           NSXC_T0_LIF=lif, NSXC_T0_IDX=str(i))
+                with open(logfile, "w") as fh:
+                    subprocess.Popen([sys.executable, SELF, "cap-t0", str(secs)],
+                                     stdout=fh, stderr=fh, stdin=subprocess.DEVNULL,
+                                     env=env, start_new_session=True)
+                time.sleep(1)
+            log("  started. Watch with:  python3 nsx-collector.py status")
+
     elif action == "cap-vpct1":
         if not IS_EDGE:
             die("cap-vpct1 is Edge only")
@@ -2348,7 +2604,7 @@ def dispatch(action, args):
             filter_problem(expr, msg)
             sys.exit(2)
         edge_capture("vpct1-uplink", "11-edge-vpct1uplink", cget("LIF_VPCT1_UPLINK"), expr,
-                     secs, cget("CAP_SESSION_VPCT1") or "0", cget("T1_VPC_SR_UUID"))
+                     secs, edge_span_free(1)[0], cget("T1_VPC_SR_UUID"))
     elif action in ("cap-pre", "cap-post"):
         if not IS_ESXI:
             die("%s is ESXi only" % action)
