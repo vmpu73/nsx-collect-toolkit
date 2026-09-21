@@ -23,7 +23,7 @@ run-*/
 
 # lab-specific staging notes (contain credentials and real lab addresses)
 TESTME.md
-training/*v1.0*
+training/*교육자료-v1.0*
 
 # python
 __pycache__/
