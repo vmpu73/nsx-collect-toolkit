@@ -20,3 +20,10 @@ run-*/
 ._*
 *~
 *.swp
+
+# lab-specific staging notes (contain credentials and real lab addresses)
+TESTME.md
+training/*v1.0*
+
+# python
+__pycache__/

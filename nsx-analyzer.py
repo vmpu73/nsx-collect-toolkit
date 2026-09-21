@@ -20,7 +20,7 @@ import re
 import sys
 import time
 
-VERSION = "6.2"
+VERSION = "6.3"
 UIW = 70
 
 # Where runs usually are, in the order they are looked for.

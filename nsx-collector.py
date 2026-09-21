@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "6.2"
+VERSION = "6.3"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SELF = os.path.abspath(__file__)
 CONF_PATH = os.environ.get("NSXC_CONF", os.path.join(HERE, "nsx-collector.conf"))
