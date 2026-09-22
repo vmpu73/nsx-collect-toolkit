@@ -27,3 +27,4 @@ training/*교육자료-v1.0*
 
 # python
 __pycache__/
+training/_superseded/

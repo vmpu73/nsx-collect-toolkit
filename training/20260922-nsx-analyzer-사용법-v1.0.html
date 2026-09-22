@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>nsx-analyzer 사용법</title>
+<style>
+@page{size:A4;margin:17mm 15mm 15mm 15mm}
+:root{--ink:#16202c;--ink2:#3d4d5e;--mut:#6b7d8f;--line:#d3dde6;--blue:#1a4f7a;--blue2:#2d6fa8;
+      --bg:#f3f7fa;--red:#a8322b;--redbg:#fdf2f1;--grn:#1f6b4d;--grnbg:#eef7f3;--amb:#8a5a12;--ambbg:#fdf7ec}
+*{box-sizing:border-box} html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:"Apple SD Gothic Neo","Noto Sans KR",-apple-system,sans-serif;color:var(--ink);
+     font-size:10.2pt;line-height:1.68;margin:0;word-break:keep-all;overflow-wrap:break-word}
+.cover{height:248mm;display:flex;flex-direction:column;page-break-after:always}
+.cover .tag{font-size:9.5pt;letter-spacing:.14em;color:var(--blue2);font-weight:700;margin-bottom:6mm}
+.cover .rule{height:3px;background:var(--blue);width:42mm;margin-bottom:10mm}
+.cover h1{font-size:28pt;line-height:1.26;margin:0 0 6mm;color:var(--blue);font-weight:800}
+.cover .sub{font-size:13pt;color:var(--ink2);margin-bottom:12mm;font-weight:500;line-height:1.55}
+.cover .note{background:var(--bg);border-left:3px solid var(--blue2);padding:6mm 7mm;font-size:10pt;color:var(--ink2)}
+.cover .meta{margin-top:auto;border-top:1px solid var(--line);padding-top:6mm;font-size:10pt}
+.cover .meta div{padding:1.6mm 0} .cover .meta b{display:inline-block;width:26mm;color:var(--mut)}
+.part{page-break-before:always;border-top:3px solid var(--blue);padding-top:4mm;margin-bottom:7mm}
+.part .pno{font-size:9pt;letter-spacing:.16em;color:var(--blue2);font-weight:700}
+.part .ptitle{font-size:19pt;font-weight:800;color:var(--blue);margin-top:1.5mm;line-height:1.3}
+.part .pdesc{font-size:10pt;color:var(--mut);margin-top:2mm}
+h2{font-size:13.5pt;color:var(--blue);margin:8mm 0 3mm;padding-bottom:1.6mm;
+   border-bottom:1px solid var(--line);page-break-after:avoid;font-weight:800}
+h3{font-size:11pt;color:var(--ink);margin:6mm 0 2.4mm;page-break-after:avoid;font-weight:800}
+p{margin:0 0 3mm} ul,ol{margin:0 0 3.2mm;padding-left:6mm} li{margin-bottom:1.6mm}
+strong{font-weight:800;color:#0d1720} em{font-style:normal;color:var(--blue2);font-weight:700}
+table{width:100%;border-collapse:collapse;margin:3mm 0 4.5mm;font-size:9.4pt;page-break-inside:avoid}
+th{background:var(--bg);border:1px solid var(--line);padding:2.4mm 2.8mm;text-align:left;
+   font-weight:800;color:var(--blue);font-size:9.2pt}
+td{border:1px solid var(--line);padding:2.4mm 2.8mm;vertical-align:top}
+td.c,th.c{text-align:center} tbody tr:nth-child(even) td{background:#fbfdfe}
+code{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:9pt;background:#eef3f7;
+     padding:.4mm 1.2mm;border-radius:2px;color:#12395c}
+pre{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:8.4pt;line-height:1.58;background:#f7fafc;
+    border:1px solid var(--line);border-left:3px solid var(--blue2);padding:3.4mm 4mm;margin:3mm 0 4.5mm;
+    white-space:pre;page-break-inside:avoid;color:#1d2b38;overflow:visible}
+pre b{color:var(--red);font-weight:800} pre i{color:var(--grn);font-style:normal;font-weight:700}
+.box{border:1px solid var(--line);border-left:3px solid var(--blue2);background:#fafcfd;
+     padding:4mm 4.5mm;margin:3.5mm 0 4.5mm;page-break-inside:avoid}
+.box .bt{font-weight:800;color:var(--blue);font-size:10.2pt;margin-bottom:2mm}
+.box.k{border-left-color:var(--red);background:var(--redbg)} .box.k .bt{color:var(--red)}
+.box.g{border-left-color:var(--grn);background:var(--grnbg)} .box.g .bt{color:var(--grn)}
+.box.w{border-left-color:var(--amb);background:var(--ambbg)} .box.w .bt{color:var(--amb)}
+.box p:last-child,.box ul:last-child,.box ol:last-child,.box table:last-child,.box pre:last-child{margin-bottom:0}
+.toc{font-size:10.4pt} .toc .ti{display:flex;justify-content:space-between;
+     border-bottom:1px dotted var(--line);padding:2mm 0;color:var(--ink2)}
+.toc .ti b{color:var(--blue)}
+.foot{margin-top:9mm;padding-top:3mm;border-top:1px solid var(--line);font-size:9pt;color:var(--mut)}
+</style></head><body>
+
+<section class="cover">
+  <div class="tag">NSX 현장 수집 도구 · 분석기 편</div><div class="rule"></div>
+  <h1>nsx-analyzer<br>사용법</h1>
+  <div class="sub">수집한 결과를 읽고 해석하기<br>
+  <strong>어디서 사라졌는지를 찾는 도구</strong></div>
+  <div class="note"><strong>수집기는 모으기만 하고, 해석은 이 스크립트가 한다.</strong><br><br>
+  pcap 을 Wireshark 로 하나하나 열어 보는 대신, <strong>5-tuple 하나를 주면 모든 캡처 지점을 훑어
+  "어디까지 갔고 어디서 사라졌는지"</strong>를 말해 준다. 카운터·세션 테이블도 같이 읽어
+  드롭이 늘었는지, 세션이 언제 사라졌는지를 붙여 준다.<br><br>
+  <strong>장비가 아니라 내 노트북에서 돌린다.</strong> 읽기만 하므로 몇 번을 돌려도 안전하다.</div>
+  <div class="meta">
+    <div><b>도구</b> nsx-analyzer <strong>v6.3</strong></div>
+    <div><b>짝</b> nsx-collector 사용법 (수집 편)</div>
+    <div><b>작성일</b> 2026-09-22</div>
+  </div>
+</section>
+
+<section>
+  <div class="part"><div class="pno">CONTENTS</div><div class="ptitle">목차</div></div>
+  <div class="toc">
+    <div class="ti"><span><b>Part 1</b> &nbsp; 분석기가 하는 일</span><span>3</span></div>
+    <div class="ti"><span><b>Part 2</b> &nbsp; 결과 가져오기와 실행</span><span>5</span></div>
+    <div class="ti"><span><b>Part 3</b> &nbsp; overview — 무엇이 들어 있나</span><span>7</span></div>
+    <div class="ti"><span><b>Part 4</b> &nbsp; flow — 어디서 사라졌나 ★</span><span>8</span></div>
+    <div class="ti"><span><b>Part 5</b> &nbsp; state — 카운터가 어떻게 움직였나</span><span>10</span></div>
+    <div class="ti"><span><b>Part 6</b> &nbsp; session — 세션 · LB · DFW</span><span>11</span></div>
+    <div class="ti"><span><b>Part 7</b> &nbsp; report — 한 파일로</span><span>13</span></div>
+    <div class="ti"><span><b>Part 8</b> &nbsp; 판독 치트시트</span><span>14</span></div>
+  </div>
+  <div class="box g" style="margin-top:10mm">
+    <div class="bt">순서만 지키면 된다</div>
+<pre>overview  →  flow  →  state · session  →  report
+무엇이      어디서      왜                  보고서로
+있나        사라졌나    그랬나</pre>
+    <p><strong>Part 4(flow)가 이 도구의 핵심</strong>이다. 나머지는 거기서 나온 답을 뒷받침한다.</p>
+  </div>
+</section>
+
+<!-- ===== PART 1 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 1</div><div class="ptitle">분석기가 하는 일</div></div>
+
+  <h2>수집기와 역할이 나뉘어 있다</h2>
+  <table>
+    <colgroup><col style="width:26%"><col><col style="width:26%"></colgroup>
+    <tr><th>하는 일</th><th>스크립트</th><th>어디서</th></tr>
+    <tr><td>모으기</td><td><code>nsx-collector.py</code></td><td>조사 대상 장비 (Edge · ESXi)</td></tr>
+    <tr style="background:#eef7f3"><td><strong>해석하기</strong></td><td><code>nsx-analyzer.py</code></td>
+        <td><strong>아무 데서나</strong> — 보통 내 노트북</td></tr>
+  </table>
+  <p>두 스크립트는 <strong>폴더 구조만 공유</strong>하고 서로를 부르지 않는다.
+  수집기가 만든 <code>run-&lt;장비&gt;-&lt;날짜&gt;-&lt;시각&gt;/</code> 를 분석기가 읽는 방식이다.</p>
+
+  <div class="box g">
+    <div class="bt">왜 분리했나</div>
+    <ul style="margin-bottom:0">
+      <li><strong>장비에 부담을 주지 않는다</strong> — 분석은 CPU 를 꽤 쓴다. 운영 Edge 에서 할 일이 아니다</li>
+      <li><strong>몇 번이고 다시 볼 수 있다</strong> — 같은 데이터를 조건만 바꿔 계속 돌린다</li>
+      <li><strong>수집은 짧게, 분석은 길게</strong> — 현장에서는 뜨는 데만 집중하고 해석은 나와서 한다</li>
+    </ul>
+  </div>
+
+  <h2>무엇을 읽어 주나</h2>
+  <table>
+    <colgroup><col style="width:22%"><col></colgroup>
+    <tr><th>명령</th><th>답해 주는 질문</th></tr>
+    <tr><td><code>overview</code></td><td>이 수집에 <strong>무엇이 들어 있나</strong> — 지점·기간·건수</td></tr>
+    <tr style="background:#eef7f3"><td><code>flow</code></td>
+        <td><strong>이 통신이 어디까지 갔고 어디서 사라졌나</strong> ★</td></tr>
+    <tr><td><code>state</code></td><td>그 시간 동안 <strong>드롭·에러가 늘었나</strong>, HA 가 바뀌었나</td></tr>
+    <tr><td><code>session</code></td><td><strong>세션이 있었나 없었나</strong>, LB 풀은 살아 있었나</td></tr>
+    <tr><td><code>report</code></td><td>위 전부를 <strong>파일 하나로</strong></td></tr>
+  </table>
+
+  <h2>pcap 을 직접 해석한다</h2>
+  <p>Wireshark 를 열지 않아도 된다. 그리고 두 가지를 알아서 처리한다.</p>
+  <table>
+    <colgroup><col style="width:34%"><col></colgroup>
+    <tr><th>처리</th><th>왜 중요한가</th></tr>
+    <tr><td><strong>VLAN 태그 패킷</strong></td>
+        <td>Edge 캡처는 <strong>절반쯤이 802.1Q 태그가 붙은 채</strong> 잡힌다.
+            <code>tcpdump</code> 로 손수 볼 때 <code>vlan</code> 분기를 안 넣으면
+            <strong>조용히 절반만 보인다.</strong> 분석기는 양쪽을 다 센다</td></tr>
+    <tr><td><strong>pcapng 형식</strong></td>
+        <td>ESXi 의 <code>pktcap-uw</code> 는 pcapng 로 떨군다. 그대로 읽는다</td></tr>
+  </table>
+</section>
+
+<!-- ===== PART 2 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 2</div><div class="ptitle">결과 가져오기와 실행</div></div>
+
+  <h2>장비에서 결과를 가져온다</h2>
+<pre>scp -r root@&lt;장비&gt;:/var/dump/nsx-collect/run-&lt;장비&gt;-20260912-073308 .</pre>
+  <p>ESXi 라면 <code>OUT</code> 에 지정한 데이터스토어 경로에서 가져온다.</p>
+<pre>scp -r root@&lt;esxi&gt;:/vmfs/volumes/&lt;데이터스토어&gt;/nsxc/run-* .</pre>
+
+  <h2>돌린다</h2>
+<pre>python3 nsx-analyzer.py                    <i># 메뉴</i>
+python3 nsx-analyzer.py --run ./run-...    <i># 폴더를 직접 지정</i>
+python3 nsx-analyzer.py &lt;동작&gt;              <i># 메뉴 없이 그 동작만</i>
+python3 nsx-analyzer.py help</pre>
+
+  <h3>실행 폴더를 찾는 순서</h3>
+  <table>
+    <colgroup><col style="width:10%"><col style="width:36%"><col></colgroup>
+    <tr><th class="c">순서</th><th>찾는 곳</th><th></th></tr>
+    <tr><td class="c">1</td><td><code>--run &lt;경로&gt;</code></td><td>직접 준 것이 최우선</td></tr>
+    <tr><td class="c">2</td><td><code>/var/dump/nsx-collect</code></td><td>Edge 위에서 바로 돌릴 때</td></tr>
+    <tr><td class="c">3</td><td><code>/tmp/nsx-collect</code></td><td>ESXi 기본 경로</td></tr>
+    <tr><td class="c">4</td><td>현재 폴더</td><td>가져온 폴더 옆에서 돌릴 때</td></tr>
+  </table>
+  <p>여러 개가 있으면 <strong>목록에서 고른다</strong> — 메뉴의 <code>l</code> 또는 <code>runs</code>.</p>
+
+  <h2>메뉴</h2>
+<pre>+======================================================================+
+|  NSX Analyzer 6.3                                                    |
+|  run: run-edge02-20260912-073308                                     |
++======================================================================+
+|    1  overview        what this run contains                         |
+|    2  flow            find a flow (5-tuple) and explain it           |
+|    3  state           counters, HA state, rising drops               |
+|    4  session         firewall connections, LB, DFW                  |
+|    5  report          all of it, saved to a file                     |
+|    r  pick another run        9  help                                |
+|    l  list runs               q  quit                                |
++======================================================================+</pre>
+
+  <div class="box g">
+    <div class="bt">읽기만 한다</div>
+    <p>분석기는 <strong>파일을 고치지 않는다.</strong> <code>report</code> 로 보고서를 저장할 때만 파일을 만든다.
+    몇 번을 돌려도 원본은 그대로다. 마음껏 조건을 바꿔 가며 돌리면 된다.</p>
+  </div>
+</section>
+
+<!-- ===== PART 3 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 3</div><div class="ptitle">overview<br>무엇이 들어 있나</div>
+  <div class="pdesc">항상 여기서 시작한다. 없는 데이터를 근거로 결론을 내지 않기 위해서다.</div></div>
+
+  <h2>보여 주는 것</h2>
+  <table>
+    <colgroup><col style="width:32%"><col></colgroup>
+    <tr><th>항목</th><th>내용</th></tr>
+    <tr><td>수집 당시 정보</td><td>케이스 번호 · 장비 · <strong>실제로 사용된 필터식</strong></td></tr>
+    <tr><td>파일 현황</td><td><code>pcap</code> / <code>state</code> / <code>session</code> 별 파일 수와 크기</td></tr>
+    <tr style="background:#eef7f3"><td><strong>지점별 패킷 수</strong></td>
+        <td>캡처 지점마다 <strong>몇 건이 잡혔고 시간 범위가 어떻게 되는지</strong>,
+            그 지점이 무엇을 보는 곳인지 설명까지</td></tr>
+    <tr style="background:#fdf2f1"><td><strong>오류만 든 파일</strong></td>
+        <td>명령이 거부되어 <strong>데이터 대신 에러 메시지만 들어 있는 파일</strong>을 따로 알려 준다</td></tr>
+  </table>
+
+  <div class="box k">
+    <div class="bt">"오류만 든 파일" 경고를 반드시 보고 넘어간다</div>
+    <p>수집기가 그 NSX 버전에 없는 명령을 쓰면 파일은 만들어지는데 <strong>안에는 에러 문구만</strong> 들어 있다.
+    파일 목록만 보면 다 모인 것처럼 보이지만 실은 빈 껍데기다.</p>
+    <p><strong>이걸 모르고 들어가면 없는 데이터를 근거로 "이상 없음"이라고 보고하게 된다.</strong>
+    v6 에서 Edge 명령 4개를 고친 것도 이것 때문이다.</p>
+  </div>
+
+  <div class="box w">
+    <div class="bt">지점별 패킷 수가 0 이면 거기서 멈춘다</div>
+    <p>flow 를 돌리기 전에 <strong>애초에 그 지점에 데이터가 있는지</strong>부터 확인한다.
+    0 건이면 분석의 문제가 아니라 <strong>수집의 문제</strong>다 — Standby Edge 에서 떴거나,
+    필터가 안 맞았거나, 그 시간에 트래픽이 없었다.</p>
+  </div>
+</section>
+
+<!-- ===== PART 4 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 4</div><div class="ptitle">flow<br>어디서 사라졌나</div>
+  <div class="pdesc">이 도구의 핵심. 5-tuple 하나로 모든 지점을 훑는다.</div></div>
+
+  <h2>쓰는 법</h2>
+<pre>python3 nsx-analyzer.py flow --src 10.1.1.5 --dst 10.1.1.50 --dport 8080 --proto tcp
+python3 nsx-analyzer.py flow --dst &lt;NAT_IP&gt; --dport 1813 --proto udp</pre>
+  <ul>
+    <li><strong>값은 전부 선택</strong>이다. 아는 것만 주면 된다</li>
+    <li><strong>응답 방향도 함께</strong> 찾는다. 출발지·목적지를 뒤집어 줄 필요가 없다</li>
+  </ul>
+
+  <div class="box g">
+    <div class="bt">정확히 안 맞으면 한 번 더 찾아 준다</div>
+    <p>5-tuple 로 못 찾으면 <code>host X and port Y</code> 방식으로 넓혀 다시 찾고 알려 준다.
+    <strong>LB SNAT 처럼 포트가 임의로 바뀌는 경우</strong>에 필요하다 —
+    나갈 때 포트가 달라지니 정확한 5-tuple 이 성립하지 않는다.</p>
+  </div>
+
+  <h2>알려 주는 것</h2>
+  <table>
+    <colgroup><col style="width:18%"><col></colgroup>
+    <tr><th>구분</th><th>내용</th></tr>
+    <tr style="background:#eef7f3"><td><strong>지점별</strong></td>
+        <td>건수 · 방향 · 바이트, 첫/마지막 시각,
+            <strong>관찰된 주소 조합 = NAT 이 일어난 지점</strong></td></tr>
+    <tr><td><strong>TCP</strong></td>
+        <td>SYN / SYN-ACK / RST / FIN 개수, <strong>핸드셰이크 성공 여부와 RTT</strong>,
+            재전송, 제로 윈도우, <strong>누가 먼저 끊었는지</strong></td></tr>
+    <tr><td><strong>UDP</strong></td>
+        <td>요청 · 응답 수, 응답 시간 중앙값 · 최대,
+            <strong>30초를 넘으면 방화벽 세션 만료 경고</strong>, RADIUS 메시지 종류</td></tr>
+    <tr><td><strong>ICMP</strong></td>
+        <td>unreachable 사유, <strong>MTU 문제</strong></td></tr>
+    <tr style="background:#eef7f3"><td><strong>지점 비교</strong></td>
+        <td>같은 vNIC 의 <code>pre</code> / <code>post</code> 를 비교해
+            <strong>통과 / 일부 드롭 / 전량 드롭</strong> 으로 구분</td></tr>
+    <tr><td>끝에</td><td>같은 것을 손으로 확인할 <code>tcpdump</code> 명령
+            (<strong>Edge 용 vlan 분기 포함</strong>)</td></tr>
+  </table>
+
+  <div class="box g">
+    <div class="bt">"지점 비교"가 결론을 만든다</div>
+    <p>DFW <code>pre</code> 에는 있는데 <code>post</code> 에 없으면 <strong>DFW 가 막은 것</strong>이다.
+    추정이 아니라 증거다. 이 한 줄이 나오면 조사가 끝난다.</p>
+  </div>
+
+  <div class="box w">
+    <div class="bt">UDP 30초 경고</div>
+    <p>응답이 30초를 넘겨 왔다면 <strong>그 사이에 방화벽 세션이 만료됐을 수 있다.</strong>
+    GFW 의 UDP 타이머가 30초이기 때문이다. 응답은 왔는데 클라이언트가 못 받은 사고가 이렇게 난다.</p>
+  </div>
+
+  <h2>여러 장비의 결과를 한 번에 — <code>--all-runs</code></h2>
+  <p>조사 하나가 <strong>실행 폴더 여러 개</strong>가 되는 경우가 많다.</p>
+  <ul>
+    <li>VPC T1 과 LB T1 의 Active 가 <strong>서로 다른 Edge</strong> → Edge 마다 폴더 1개</li>
+    <li>백엔드 VM 이 <strong>여러 ESXi 호스트</strong>에 흩어져 있음 → 호스트마다 폴더 1개</li>
+  </ul>
+  <p>폴더들을 한 곳에 모아 두고 이렇게 하면 전부 훑는다.</p>
+<pre>python3 nsx-analyzer.py flow --all-runs --run &lt;모아둔폴더&gt; \
+  --dst &lt;VIP&gt; --dport 80 --proto tcp</pre>
+  <p>실측 출력 (Edge 2대):</p>
+<pre>2 run directory(ies): run-edge01-..., run-edge02-...
+  RUN run-edge01-...   <b>NOT FOUND here (0 packet(s) in the file)</b>
+  RUN run-edge02-...   <i>292 packet(s) of this flow out of 965 in the file</i></pre>
+  <div class="box g">
+    <div class="bt">이게 진짜 무기다</div>
+    <p>Edge 와 ESXi 결과를 한 번에 놓고 같은 5-tuple 을 추적하면
+    <strong>"T0 에는 보이는데 LB T1 에는 없다", "pre 에는 있는데 post 에 없다"</strong> 같은
+    <strong>구간 판정이 바로 나온다.</strong></p>
+  </div>
+</section>
+
+<!-- ===== PART 5 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 5</div><div class="ptitle">state<br>카운터가 어떻게 움직였나</div>
+  <div class="pdesc">flow 가 찾은 현상의 뒷받침. "왜 그랬나"를 여기서 본다.</div></div>
+
+  <h2>보여 주는 것</h2>
+  <table>
+    <colgroup><col style="width:30%"><col></colgroup>
+    <tr><th>항목</th><th>내용</th></tr>
+    <tr style="background:#fdf2f1"><td><strong>라우터 HA 상태</strong></td>
+        <td><strong>샘플마다</strong> 보여 주고, 중간에 바뀌면 <code>&lt;-- CHANGED</code> 로 표시</td></tr>
+    <tr><td>Edge 인터페이스</td><td><code>fp-eth*</code> · <code>eth*</code> 와 논리 라우터 인터페이스의 RX/TX 증감</td></tr>
+    <tr><td>ESXi 카운터</td><td>업링크 NIC, VM 스위치 포트 증감</td></tr>
+    <tr style="background:#eef7f3"><td><strong>오류 · 드롭</strong></td>
+        <td>따로 모아서, <strong>그 시간 동안 늘어난 것만 "먼저 볼 것"으로 표시</strong></td></tr>
+  </table>
+
+  <div class="box k">
+    <div class="bt">HA 가 바뀌었다면 거기서 답이 나온다</div>
+    <p>캡처 도중 Active / Standby 가 바뀌면 <strong>"갑자기 끊겼다"의 답이 여기 있다.</strong>
+    페일오버 순간 <strong>세션 상태가 넘어가지 못한 연결은 그대로 끊긴다.</strong></p>
+    <p><code>&lt;-- CHANGED</code> 표시를 발견하면 그 시각과 장애 시각을 맞춰 본다.</p>
+  </div>
+
+  <div class="box g">
+    <div class="bt">카운터는 누적값이라 "증감"만 의미가 있다</div>
+    <p>한 번만 뜬 값은 아무 정보가 없다. 분석기는 <strong>샘플 간 차이</strong>를 계산해 보여 준다.
+    수집할 때 <code>INTERVAL</code> 로 여러 번 뜬 이유가 이것이다.</p>
+  </div>
+</section>
+
+<!-- ===== PART 6 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 6</div><div class="ptitle">session<br>세션 · LB · DFW</div>
+  <div class="pdesc">"세션이 있었나 없었나"를 판정한다.</div></div>
+
+  <h2>NSX Edge</h2>
+  <table>
+    <colgroup><col style="width:28%"><col></colgroup>
+    <tr><th>항목</th><th>내용</th></tr>
+    <tr><td>연결 수 추이</td><td>인터페이스별로 샘플마다 — <code>9d7af199  073311=45, 073355=33</code></td></tr>
+    <tr style="background:#eef7f3"><td><strong>연결 테이블 분석</strong></td>
+        <td>프로토콜 · 상태 분포, <strong>SYN 상태(half-open) 경고</strong>,
+            그리고 <strong>NAT 매핑</strong>을 그대로<br>
+            <code>10.0.0.1:61496 -&gt; &lt;VIP&gt;:80 (as 10.0.0.1:80)</code></td></tr>
+    <tr><td>로드밸런서</td>
+        <td>샘플마다 상태와 <strong>가상 서버 · 풀 업 개수</strong>(다운이면 경고),
+            L4/L7 현재 · 최대 · 누적 세션, 초당 세션 수</td></tr>
+    <tr><td>풀 멤버</td><td>멤버별 IP · 포트 · 상태와 <strong>헬스 모니터 상태</strong></td></tr>
+  </table>
+
+  <h2>ESXi</h2>
+  <table>
+    <colgroup><col style="width:28%"><col></colgroup>
+    <tr><th>항목</th><th>내용</th></tr>
+    <tr style="background:#eef7f3"><td><strong>DFW pass / drop</strong></td>
+        <td>패킷 기준 카운터와 그 시간 동안의 증감 → 드롭이 늘면 경고하고
+            <strong>왜 떨어졌는지</strong>까지 (<code>icmp error</code>,
+            <code>state-mismatch</code>, <code>seqno outside window</code> 등)</td></tr>
+    <tr><td>DFW 세션 표</td><td>건수 추이, 적용된 규칙 수와 <strong>drop/reject 규칙 수</strong></td></tr>
+  </table>
+
+  <div class="box g">
+    <div class="bt">드롭 사유까지 보여 준다</div>
+    <p>DFW 가 막았다는 것만이 아니라 <strong>어떤 종류의 드롭인지</strong>를 구분해 준다.
+    <code>state-mismatch</code> 나 <code>seqno outside window</code> 가 늘었다면
+    정책 문제가 아니라 <strong>세션 상태 문제</strong>다 — 정책을 고쳐도 해결되지 않는다.</p>
+  </div>
+
+  <div class="box w">
+    <div class="bt">가장 최근 샘플을 "전부" 읽는다</div>
+    <p>연결 테이블과 DFW 세션 표는 <strong>인터페이스 · vNIC 마다</strong> 최근 샘플을 전부 읽는다.
+    <strong>파일 하나만 보면 한쪽만 보인다</strong> — 실측으로 잡은 문제다.</p>
+  </div>
+
+  <h2>특정 플로우만 보기</h2>
+  <p>5-tuple 을 같이 주면 <strong>연결 테이블과 DFW 세션 표에서 그 플로우만</strong> 찾아 준다.</p>
+<pre>python3 nsx-analyzer.py session --dst 10.0.0.1 --dport 80 --proto tcp</pre>
+</section>
+
+<!-- ===== PART 7 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 7</div><div class="ptitle">report<br>한 파일로</div></div>
+
+  <h2>쓰는 법</h2>
+<pre>python3 nsx-analyzer.py report 분석결과.txt
+python3 nsx-analyzer.py report 분석결과.txt --dst 10.1.1.50 --dport 8080 --proto tcp</pre>
+  <p><code>overview</code> + <code>state</code> + <code>session</code> 을 한 파일에 담는다.
+  <strong>5-tuple 을 주면 <code>flow</code> 까지</strong> 들어간다.</p>
+  <p>메뉴에서 <code>5</code> 를 누르면 실행 폴더 안에 <code>99-analysis-&lt;시각&gt;.txt</code> 로 저장된다.</p>
+
+  <div class="box g">
+    <div class="bt">고객 회신 · 케이스 첨부에 그대로 쓴다</div>
+    <p>손으로 정리할 필요 없이 <strong>근거가 붙은 한 파일</strong>이 나온다.
+    본사 케이스를 열 때도 이 파일을 첨부하면 된다.</p>
+  </div>
+
+  <h2>정리하면 이 순서다</h2>
+<pre>1. scp 로 결과를 가져온다
+2. overview      <i># 데이터가 제대로 있는지부터</i>
+3. flow          <i># 어디서 사라졌나  ← 핵심</i>
+4. state         <i># 드롭·에러가 늘었나, HA 가 바뀌었나</i>
+5. session       <i># 세션이 있었나 없었나</i>
+6. report        <i># 한 파일로 저장</i></pre>
+</section>
+
+<!-- ===== PART 8 ===== -->
+<section>
+  <div class="part"><div class="pno">PART 8</div><div class="ptitle">판독 치트시트</div>
+  <div class="pdesc">출력에서 이게 보이면 이렇게 읽는다.</div></div>
+
+  <h2>flow 에서</h2>
+  <table>
+    <colgroup><col style="width:40%"><col></colgroup>
+    <tr><th>이게 보이면</th><th>이렇게 읽는다</th></tr>
+    <tr><td><code>NOT FOUND here (0 packet(s))</code></td>
+        <td>그 지점에는 이 흐름이 <strong>안 지나갔다.</strong> 앞 지점과 비교해 <strong>구간을 좁힌다</strong></td></tr>
+    <tr style="background:#fdf2f1"><td><strong>pre 에 있고 post 에 없음</strong></td>
+        <td><strong>DFW 가 막았다.</strong> 조사 끝</td></tr>
+    <tr><td>SYN 은 있는데 SYN-ACK 가 없음</td>
+        <td>서버까지 안 갔거나, <strong>응답이 돌아오는 길에서 사라졌다</strong></td></tr>
+    <tr><td>재전송이 많음</td><td>중간에서 유실되고 있다. 카운터(Part 5)로 넘어간다</td></tr>
+    <tr><td>주소 조합이 지점마다 다름</td><td><strong>그 사이에서 NAT 이 일어났다.</strong> 정상일 수도, 예상 밖일 수도</td></tr>
+    <tr><td>UDP 응답 30초 초과 경고</td><td><strong>방화벽 세션이 만료됐을 수 있다</strong></td></tr>
+  </table>
+
+  <h2>state 에서</h2>
+  <table>
+    <colgroup><col style="width:40%"><col></colgroup>
+    <tr><th>이게 보이면</th><th>이렇게 읽는다</th></tr>
+    <tr style="background:#fdf2f1"><td><code>&lt;-- CHANGED</code> (HA 상태)</td>
+        <td><strong>페일오버가 있었다.</strong> 장애 시각과 맞춰 본다</td></tr>
+    <tr><td>드롭 카운터가 "먼저 볼 것"에</td><td>그 구간에서 실제로 버려지고 있다</td></tr>
+    <tr><td>RX 는 느는데 TX 가 안 늚</td><td>들어오기만 하고 못 나간다. <strong>다음 홉을 본다</strong></td></tr>
+  </table>
+
+  <h2>session 에서</h2>
+  <table>
+    <colgroup><col style="width:40%"><col></colgroup>
+    <tr><th>이게 보이면</th><th>이렇게 읽는다</th></tr>
+    <tr><td>연결 수가 급감</td><td>세션이 <strong>대량으로 사라진 시점</strong>이 있다</td></tr>
+    <tr><td>SYN 상태(half-open) 경고</td><td>핸드셰이크가 안 끝나는 연결이 쌓인다</td></tr>
+    <tr style="background:#fdf2f1"><td>LB 풀 멤버 DOWN</td>
+        <td><strong>백엔드 문제.</strong> 네트워크를 파기 전에 <strong>VM 전원부터</strong> 확인</td></tr>
+    <tr><td>DFW <code>state-mismatch</code> 증가</td>
+        <td>정책이 아니라 <strong>세션 상태 문제.</strong> 정책을 고쳐도 안 낫는다</td></tr>
+    <tr><td>NAT 매핑 <code>(as ...)</code></td><td>그 연결의 <strong>원래 주소</strong>. LB 경로 추적의 핵심</td></tr>
+  </table>
+
+  <div class="box g">
+    <div class="bt">기억할 것 세 가지</div>
+    <ol style="margin-bottom:0">
+      <li><strong><code>overview</code> 없이 시작하지 않는다</strong> — 없는 데이터로 결론 내는 것이 최악이다</li>
+      <li><strong>지점 비교가 결론을 만든다</strong> — 한 지점만 보면 아무것도 확정되지 않는다</li>
+      <li><strong>장비가 여러 대면 <code>--all-runs</code></strong> — 따로 보면 구간 판정이 안 된다</li>
+    </ol>
+  </div>
+
+  <div class="foot">
+    <strong>nsx-analyzer 사용법 v1.0</strong> · 2026-09-22 · 도구 v6.3<br>
+    짝이 되는 문서 — <strong>nsx-collector 사용법</strong>(수집 편, 별첨 포함).
+    손으로 <code>tcpdump</code> 를 쓰는 방법은 저장소의 <code>ANALYSIS.md</code>.
+  </div>
+</section>
+</body></html>
