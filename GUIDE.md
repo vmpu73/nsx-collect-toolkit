@@ -1,4 +1,4 @@
-# 수집기 사용 가이드 — nsx-collector.py (v6.2)
+# 수집기 사용 가이드 — nsx-collector.py (v6.3)
 
 장비에 올릴 파일은 두 개뿐이다.
 
@@ -52,12 +52,12 @@ cd /tmp && tar xzf nsx-collector-<버전>.tgz
 ### NSX Edge 에서
 ```
 +======================================================================+
-|  NSX Collector 6.2   (python)                                        |
-|  <CASE_ID>   edge / <edge02>   2026-09-12 06:54:44               |
+|  NSX Collector 6.3   (python)                                        |
+|  <CASE_ID>   edge / <edge02>   2026-09-12 06:54:44                   |
 +======================================================================+
 |    SETUP                          COLLECT                            |
 |      1  config                       5  start all                    |
-|      2  discover (fill config)       6  status                        |
+|      2  discover (fill config)       6  status                       |
 |      3  check - Active node?         w  watch                        |
 |      4  rehearse (no capture)                                        |
 |    ONE AT A TIME                  FINISH                             |

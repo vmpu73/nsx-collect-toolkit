@@ -52,12 +52,12 @@ the interpreter is unaffected. ESXi 8.0.3 ships python 3.11, an NSX 4.2 Edge
 
 ```
 +======================================================================+
-|  NSX Collector 5.0   (python)                                        |
-|  <CASE_ID>   esxi / esx01   2026-09-12 06:56:06                   |
+|  NSX Collector 6.3   (python)                                        |
+|  <CASE_ID>   esxi / esx01   2026-09-12 06:56:06                      |
 +======================================================================+
 |    SETUP                          COLLECT                            |
 |      1  config                       5  start all                    |
-|      2  discover (fill config)       6  status                        |
+|      2  discover (fill config)       6  status                       |
 |      3  check / VM map               w  watch                        |
 |      4  rehearse (no capture)                                        |
 |    ONE AT A TIME                  FINISH                             |

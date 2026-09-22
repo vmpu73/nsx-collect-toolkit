@@ -1,4 +1,4 @@
-# 분석기 사용 가이드 — nsx-analyzer.py (v6.2)
+# 분석기 사용 가이드 — nsx-analyzer.py (v6.3)
 
 수집기(`nsx-collector.py`)는 **모으기만** 하고, 분석은 이 스크립트가 한다.
 
@@ -26,8 +26,8 @@ python3 nsx-analyzer.py --run ./run-<edge02>-20260912-073308
 
 ```
 +======================================================================+
-|  NSX Analyzer 6.2                                                    |
-|  run: run-<edge02>-20260912-073308                                  |
+|  NSX Analyzer 6.3                                                    |
+|  run: run-<edge02>-20260912-073308                                   |
 +======================================================================+
 |    1  overview        what this run contains                         |
 |    2  flow            find a flow (5-tuple) and explain it           |
