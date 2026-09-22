@@ -16,8 +16,19 @@ analyzer only needs the run directory, so it also runs on your own machine
 after `scp -r`. A POSIX sh version of the collector (`nsx-collector.sh`, same
 config file) is kept as a fallback where python is not wanted.
 
-Korean step-by-step guides: **GUIDE.md** (collector), **ANALYZER.md**
-(analyzer); packet analysis recipes by hand: **ANALYSIS.md**.
+### Manuals
+
+Field manuals in Korean, A4 PDF, under `training/`:
+
+| | |
+|---|---|
+| **nsx-collector 사용법 v3.0** (41p) | Fill the config in first, then drive the menu. The appendix (A-H) lists **every command the tool runs**, so the same collection can be done by hand when the tool cannot be used. |
+| **nsx-analyzer 사용법 v1.0** (15p) | Reading the results back - overview, flow, state, session, report, and a cheat sheet for what the output means. |
+
+Addresses and UUIDs in the examples are documentation values, not real ones.
+
+Markdown guides: **GUIDE.md** (collector), **ANALYZER.md** (analyzer);
+packet analysis recipes by hand: **ANALYSIS.md**.
 
 Nothing is installed on the target. It uses what is already on an NSX Edge
 (sh, tcpdump, the admin CLI) and on ESXi (busybox sh, pktcap-uw, tcpdump-uw,
